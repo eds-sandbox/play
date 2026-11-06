@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiny Ant Colony</title>
+<style>
+  :root {
+    --bg: #120e0b;
+    --panel: rgba(24, 19, 15, 0.86);
+    --border: #3d3229;
+    --text: #f3ece2;
+    --muted: #b1a493;
+    --accent: #ffcf70;
+    --food: #66d27a;
+    --home: #5aa2ff;
+    --trail: #ff7a52;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+
+  .hud { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    backdrop-filter: blur(6px); }
+  #info { top: 16px; left: 16px; padding: 12px 14px; max-width: 300px; }
+  #info h1 { margin: 0 0 2px; font-size: 19px; }
+  #info .sub { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  #stats { display: grid; grid-template-columns: auto auto; gap: 2px 14px; font-variant-numeric: tabular-nums; font-size: 14px; }
+  #stats span { color: var(--muted); }
+  #stats b { color: var(--accent); font-weight: 600; text-align: right; }
+  .legend { display: flex; gap: 10px; margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+  #toolbar { bottom: 16px; left: 50%; transform: translateX(-50%); padding: 8px; display: flex; gap: 6px;
+    align-items: center; flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - 32px); }
+  .group { display: flex; gap: 4px; }
+  .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  button { font: inherit; font-size: 14px; color: var(--text); background: #2a221b; border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 11px; cursor: pointer; min-height: 36px; }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
+  label.speed { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 0 4px; }
+  input[type=range] { width: 90px; accent-color: var(--accent); }
+
+  @media (max-width: 620px) {
+    #info { padding: 10px 12px; max-width: calc(100vw - 32px); }
+    #info .sub, .legend { display: none; }
+    #stats { grid-template-columns: repeat(3, auto auto); }
+    .sep { display: none; }
+    button { padding: 7px 9px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="world"></canvas>
+
+<div id="info" class="hud">
+  <h1>Tiny Ant Colony</h1>
+  <p class="sub">You don't control the ants. Place food and walls and watch trails form.</p>
+  <div id="stats">
+    <span>Ants</span><b id="sAnts">0</b>
+    <span>Food stored</span><b id="sStored">0</b>
+    <span>Food left</span><b id="sLeft">0</b>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--home)"></i>trail home</span>
+    <span><i style="background:var(--trail)"></i>trail to food</span>
+    <span><i style="background:var(--food)"></i>food</span>
+  </div>
+</div>
+
+<div id="toolbar" class="hud">
+  <div class="group" id="tools">
+    <button data-tool="food" class="active" title="Paint food (1)">Food</button>
+    <button data-tool="wall" title="Paint walls (2)">Wall</button>
+    <button data-tool="erase" title="Erase (3)">Erase</button>
+    <button data-tool="nest" title="Move the nest (4)">Nest</button>
+  </div>
+  <div class="sep"></div>
+  <label class="speed" title="Simulation speed">Speed <input id="speed" type="range" min="1" max="10" value="3"></label>
+  <div class="sep"></div>
+  <div class="group">
+    <button id="trailsBtn" class="active" title="Show trails (T)">Trails</button>
+    <button id="pauseBtn" title="Pause (Space)">Pause</button>
+    <button id="resetBtn" title="New colony (R)">Reset</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------- World setup ----------
+// The world has a fixed size chosen at load, then scaled to fit the window,
+// so resizing (e.g. a mobile URL bar) never wipes the colony.
+const CELL = 4;
+const WORLD_W = Math.min(1600, Math.max(360, window.innerWidth));
+const WORLD_H = Math.min(1000, Math.max(560, window.innerHeight));
+const GW = Math.floor(WORLD_W / CELL), GH = Math.floor(WORLD_H / CELL), N = GW * GH;
+
+const toHome = new Float32Array(N);   // laid by ants searching for food (points back to the nest)
+const toFood = new Float32Array(N);   // laid by ants carrying food (points to the food)
+const food = new Uint8Array(N);
+const wall = new Uint8Array(N);
+
+const START_ANTS = 120, MAX_ANTS = 900, FOOD_PER_ANT = 4;
+const SPEED = 1.1, SENSE_DIST = 13, SENSE_ANGLE = 0.55, TURN = 0.32, WANDER = 0.28;
+const DECAY_FOOD = 0.9988, DECAY_HOME = 0.9994, TRAIL_FADE = 0.0016;
+
+const nest = { x: 0, y: 0, r: 16 };
+let ants = [];
+let stored = 0, foodLeft = 0, paused = false, showTrails = true;
+
+const cellAt = (x, y) => {
+  const cx = x / CELL | 0, cy = y / CELL | 0;
+  return cx < 0 || cy < 0 || cx >= GW || cy >= GH ? -1 : cy * GW + cx;
+};
+
+function paintCircle(x, y, r, fn) {
+  const c0 = Math.max(0, (x - r) / CELL | 0), c1 = Math.min(GW - 1, (x + r) / CELL | 0);
+  const r0 = Math.max(0, (y - r) / CELL | 0), r1 = Math.min(GH - 1, (y + r) / CELL | 0);
+  for (let cy = r0; cy <= r1; cy++) for (let cx = c0; cx <= c1; cx++) {
+    const px = cx * CELL + CELL / 2, py = cy * CELL + CELL / 2;
+    if ((px - x) ** 2 + (py - y) ** 2 <= r * r) fn(cy * GW + cx);
+  }
+}
+const addFood = (x, y, r, amt = 24) => paintCircle(x, y, r, i => { if (!wall[i]) food[i] = Math.min(255, food[i] + amt); });
+const addWall = (x, y, r) => paintCircle(x, y, r, i => {
+  if (Math.hypot((i % GW) * CELL - nest.x, (i / GW | 0) * CELL - nest.y) < nest.r + 6) return; // keep the nest open
+  wall[i] = 1; food[i] = 0; toHome[i] = 0; toFood[i] = 0;
+});
+const erase = (x, y, r) => paintCircle(x, y, r, i => { wall[i] = 0; food[i] = 0; toHome[i] = 0; toFood[i] = 0; });
+
+function newAnt() {
+  return { x: nest.x, y: nest.y, a: Math.random() * Math.PI * 2, carry: false, t: 0 };
+}
+
+function reset() {
+  toHome.fill(0); toFood.fill(0); food.fill(0); wall.fill(0);
+  const W = WORLD_W, H = WORLD_H;
+  nest.x = W * 0.2; nest.y = H * 0.52;
+  addFood(W * 0.8, H * 0.26, Math.min(W, H) * 0.06);
+  addFood(W * 0.74, H * 0.78, Math.min(W, H) * 0.05);
+  // A wall between the nest and the food so the ants have to find a way around it.
+  for (let y = H * 0.18; y < H * 0.68; y += 4) addWall(W * 0.48, y, 6);
+  ants = Array.from({ length: START_ANTS }, newAnt);
+  stored = 0;
+}
+
+// ---------- Simulation ----------
+function sense(field, ant, offset) {
+  const ang = ant.a + offset;
+  const i = cellAt(ant.x + Math.cos(ang) * SENSE_DIST, ant.y + Math.sin(ang) * SENSE_DIST);
+  if (i < 0 || wall[i]) return -1;
+  let v = field[i];
+  if (!ant.carry && food[i]) v += 5; // ants can smell food nearby
+  return v;
+}
+
+function stepAnt(ant) {
+  const dn = Math.hypot(ant.x - nest.x, ant.y - nest.y);
+
+  if (ant.carry && dn < 60) {
+    // Close enough to see the nest: head straight for it.
+    const want = Math.atan2(nest.y - ant.y, nest.x - ant.x);
+    let d = want - ant.a;
+    d = Math.atan2(Math.sin(d), Math.cos(d));
+    ant.a += Math.max(-0.4, Math.min(0.4, d));
+  } else {
+    const field = ant.carry ? toHome : toFood;
+    const l = sense(field, ant, -SENSE_ANGLE), c = sense(field, ant, 0), r = sense(field, ant, SENSE_ANGLE);
+    if (c >= l && c >= r) { /* keep going */ }
+    else if (l > r) ant.a -= TURN;
+    else if (r > l) ant.a += TURN;
+    else ant.a += (Math.random() < 0.5 ? -1 : 1) * TURN;
+  }
+  ant.a += (Math.random() - 0.5) * WANDER;
+
+  const nx = ant.x + Math.cos(ant.a) * SPEED, ny = ant.y + Math.sin(ant.a) * SPEED;
+  const ni = cellAt(nx, ny);
+  if (ni < 0 || wall[ni]) {
+    ant.a += Math.PI + (Math.random() - 0.5) * 1.2; // bump: turn around
+    return;
+  }
+  ant.x = nx; ant.y = ny;
+
+  // Lay a trail that is strongest near where the trip started, so it forms a gradient.
+  const strength = Math.exp(-ant.t * TRAIL_FADE);
+  const trail = ant.carry ? toFood : toHome;
+  if (trail[ni] < strength) trail[ni] = strength;
+  ant.t++;
+
+  if (!ant.carry && food[ni]) {
+    food[ni]--; ant.carry = true; ant.t = 0; ant.a += Math.PI;
+  } else if (dn < nest.r) {
+    if (ant.carry) {
+      ant.carry = false; stored++; ant.a += Math.PI;
+      if (stored % FOOD_PER_ANT === 0 && ants.length < MAX_ANTS) ants.push(newAnt());
+    }
+    ant.t = 0;
+  }
+}
+
+function step() {
+  for (let i = 0; i < ants.length; i++) stepAnt(ants[i]);
+  for (let i = 0; i < N; i++) { toFood[i] *= DECAY_FOOD; toHome[i] *= DECAY_HOME; }
+}
+
+// ---------- Rendering ----------
+const canvas = document.getElementById("world");
+const ctx = canvas.getContext("2d");
+const layer = document.createElement("canvas");
+layer.width = GW; layer.height = GH;
+const lctx = layer.getContext("2d");
+const img = lctx.createImageData(GW, GH);
+
+let view = { s: 1, ox: 0, oy: 0 }, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = innerWidth * DPR; canvas.height = innerHeight * DPR;
+  const s = Math.min(innerWidth / WORLD_W, innerHeight / WORLD_H);
+  view = { s, ox: (innerWidth - WORLD_W * s) / 2, oy: (innerHeight - WORLD_H * s) / 2 };
+}
+addEventListener("resize", resize);
+
+function drawLayer() {
+  const d = img.data;
+  for (let i = 0; i < N; i++) {
+    let r = 38, g = 29, b = 22; // soil
+    if (wall[i]) { r = 112; g = 98; b = 84; }
+    else if (food[i]) {
+      const k = 0.55 + 0.45 * Math.min(1, food[i] / 24);
+      r = 70 * k; g = 210 * k; b = 100 * k;
+    } else if (showTrails) {
+      const h = Math.sqrt(toHome[i]) * 0.55, f = Math.sqrt(toFood[i]);
+      r += 70 * h + 220 * f; g += 120 * h + 80 * f; b += 230 * h + 40 * f;
+    }
+    const o = i * 4;
+    d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = 255;
+  }
+  lctx.putImageData(img, 0, 0);
+}
+
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.fillStyle = "#120e0b";
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * view.ox, DPR * view.oy);
+
+  drawLayer();
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(layer, 0, 0, GW * CELL, GH * CELL);
+
+  // nest
+  ctx.beginPath(); ctx.arc(nest.x, nest.y, nest.r + 5, 0, Math.PI * 2);
+  ctx.fillStyle = "#5a4330"; ctx.fill();
+  ctx.beginPath(); ctx.arc(nest.x, nest.y, nest.r - 3, 0, Math.PI * 2);
+  ctx.fillStyle = "#0c0806"; ctx.fill();
+
+  // ants: one stroke for all bodies, one fill for all carried crumbs
+  ctx.beginPath();
+  for (const a of ants) {
+    const cx = Math.cos(a.a) * 2.2, cy = Math.sin(a.a) * 2.2;
+    ctx.moveTo(a.x - cx, a.y - cy); ctx.lineTo(a.x + cx, a.y + cy);
+  }
+  ctx.strokeStyle = "#f0e2cf"; ctx.lineWidth = 1.8; ctx.lineCap = "round"; ctx.stroke();
+  ctx.beginPath();
+  for (const a of ants) if (a.carry) {
+    const hx = a.x + Math.cos(a.a) * 2.8, hy = a.y + Math.sin(a.a) * 2.8;
+    ctx.moveTo(hx + 1.6, hy); ctx.arc(hx, hy, 1.6, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = "#7cf08f"; ctx.fill();
+
+  // brush preview
+  if (pointer.inside && tool !== "nest") {
+    ctx.beginPath(); ctx.arc(pointer.x, pointer.y, BRUSH, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 1; ctx.stroke();
+  }
+}
+
+// ---------- Input ----------
+const BRUSH = 18;
+let tool = "food";
+const pointer = { x: 0, y: 0, down: false, inside: false };
+
+function toWorld(e) {
+  return { x: (e.clientX - view.ox) / view.s, y: (e.clientY - view.oy) / view.s };
+}
+function applyTool() {
+  const { x, y } = pointer;
+  if (tool === "food") addFood(x, y, BRUSH, 6);
+  else if (tool === "wall") addWall(x, y, BRUSH * 0.6);
+  else if (tool === "erase") erase(x, y, BRUSH);
+  else if (tool === "nest" && cellAt(x, y) >= 0) {
+    nest.x = x; nest.y = y;
+    erase(x, y, nest.r + 6);
+    for (const a of ants) if (!a.carry) { a.t = 1e4; } // old home trails no longer point anywhere useful
+    toHome.fill(0);
+  }
+}
+canvas.addEventListener("pointerdown", e => {
+  Object.assign(pointer, toWorld(e), { down: true, inside: true });
+  canvas.setPointerCapture(e.pointerId);
+  applyTool();
+});
+canvas.addEventListener("pointermove", e => {
+  const p = toWorld(e);
+  if (pointer.down && tool !== "nest") {
+    // fill gaps when the pointer moves fast
+    const steps = Math.ceil(Math.hypot(p.x - pointer.x, p.y - pointer.y) / (BRUSH * 0.4)) || 1;
+    const sx = pointer.x, sy = pointer.y;
+    for (let k = 1; k <= steps; k++) {
+      pointer.x = sx + (p.x - sx) * k / steps; pointer.y = sy + (p.y - sy) * k / steps;
+      applyTool();
+    }
+  }
+  Object.assign(pointer, p, { inside: true });
+});
+const up = () => { pointer.down = false; };
+canvas.addEventListener("pointerup", up);
+canvas.addEventListener("pointercancel", up);
+canvas.addEventListener("pointerleave", () => { pointer.inside = false; });
+
+const toolButtons = [...document.querySelectorAll("#tools button")];
+function setTool(t) {
+  tool = t;
+  toolButtons.forEach(b => b.classList.toggle("active", b.dataset.tool === t));
+  canvas.style.cursor = t === "nest" ? "pointer" : "crosshair";
+}
+toolButtons.forEach(b => b.addEventListener("click", () => setTool(b.dataset.tool)));
+
+const speedInput = document.getElementById("speed");
+const trailsBtn = document.getElementById("trailsBtn");
+const pauseBtn = document.getElementById("pauseBtn");
+function toggleTrails() { showTrails = !showTrails; trailsBtn.classList.toggle("active", showTrails); }
+function togglePause() { paused = !paused; pauseBtn.textContent = paused ? "Play" : "Pause"; pauseBtn.classList.toggle("active", paused); }
+trailsBtn.addEventListener("click", toggleTrails);
+pauseBtn.addEventListener("click", togglePause);
+document.getElementById("resetBtn").addEventListener("click", reset);
+
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "1") setTool("food");
+  else if (k === "2") setTool("wall");
+  else if (k === "3") setTool("erase");
+  else if (k === "4") setTool("nest");
+  else if (k === "t") toggleTrails();
+  else if (k === "r") reset();
+  else if (k === " ") { e.preventDefault(); togglePause(); }
+});
+
+// ---------- Main loop ----------
+let frameNo = 0;
+const el = { ants: document.getElementById("sAnts"), stored: document.getElementById("sStored"), left: document.getElementById("sLeft") };
+function frame() {
+  if (!paused) {
+    const steps = +speedInput.value;
+    for (let s = 0; s < steps; s++) step();
+  }
+  if (pointer.down && tool !== "nest" && !paused) applyTool(); // holding still keeps painting
+  if (frameNo++ % 15 === 0) {
+    foodLeft = 0;
+    for (let i = 0; i < N; i++) foodLeft += food[i];
+    el.ants.textContent = ants.length;
+    el.stored.textContent = stored;
+    el.left.textContent = foodLeft;
+  }
+  render();
+  requestAnimationFrame(frame);
+}
+
+resize();
+reset();
+window.__antColony = { get ants() { return ants; }, get stored() { return stored; }, step, nest };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
