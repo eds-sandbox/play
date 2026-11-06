@@ -9,7 +9,8 @@
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
     font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; display: grid; place-items: center; padding: 32px 16px; }
-  main { width: 100%; max-width: 560px; display: grid; gap: 12px; }
+  main { width: 100%; max-width: 980px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  main > h1, main > p.lead { grid-column: 1 / -1; }
   main > h1, main > p.lead { margin-bottom: 0; }
   h1 { margin: 0 0 4px; font-size: 28px; }
   p.lead { margin: 0 0 24px; color: var(--muted); }
@@ -35,6 +36,10 @@
   <a class="card" href="light-bender/">
     <h2>Light Bender →</h2>
     <p>Turn and place mirrors and splitters so every ring gets exactly the colour of light it needs.</p>
+  </a>
+  <a class="card" href="gravity-doodle/">
+    <h2>Gravity Doodle →</h2>
+    <p>Draw lines with limited ink so the falling balls bounce and roll into the cup.</p>
   </a>
 </main>
 </body>
