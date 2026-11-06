@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Typing Defense</title>
+<style>
+  :root { --text: #e8f4ea; --muted: #8aa592; --accent: #7dff9b; --bad: #ff6b6b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #07110b; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+  #type { position: fixed; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; }
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; gap: 10px; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #stats { text-align: right; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg.hide { display: none; }
+  #msg .card { background: rgba(8,22,14,.92); border: 1px solid #1f3d29; border-radius: 16px; padding: 20px 26px; text-align: center; max-width: calc(100vw - 32px); }
+  #msg h2 { margin: 0 0 6px; color: var(--accent); }
+  #msg p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<input id="type" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Type here">
+<div id="top">
+  <div><h1>Typing Defense</h1><div class="muted">Type a word to shoot it. Backspace lets go of a target.</div></div>
+  <div id="stats"><div>Wave <b id="wave">1</b> · Score <b id="score">0</b></div><div class="muted"><span id="wpm">0</span> wpm · <span id="acc">100</span>% accurate</div></div>
+</div>
+<div id="msg"><div class="card"><h2 id="msgTitle">Typing Defense</h2><p id="msgText">Words are marching on your base. Start typing a word to lock on to it, finish it to fire.<br><br>Press any letter (or tap, on a phone) to start.</p></div></div>
+<script>
+"use strict";
+const WORDS = {
+  short: "ant ash bay bee cab cup dew dig elk fig fox gem hen ink jam jet kit lid map mud nap oak owl pan pie ram rug sap sky tan tub urn van wax web yak zip arc bog cod dot ear fin gum hop ivy jog keg log mop nut orb pod rib sob tip".split(" "),
+  medium: "acorn amber blaze cabin candy cliff crane daisy delta eagle ember flame frost ghost glide grape honey ivory jelly karma lemon lunar maple metal noble ocean olive panda pearl pixel quartz radar raven river robin shark spark storm tiger torch ultra vapor viper waltz whale yacht zebra anchor basket candle dragon falcon garden harbor island jigsaw kettle magnet meadow orbit parrot pepper puzzle rocket saddle signal tunnel velvet walnut".split(" "),
+  long: "airplane asteroid backpack blizzard calendar campfire carnival champion daydream dinosaur elephant evergreen fireworks flamingo galaxies gardener hedgehog horizon illusion jellyfish kangaroo keyboard labyrinth lighthouse marathon midnight mosquito mountain nightfall notebook octopus orchestra pancakes paradise penguins pineapple porcupine question rainbow sandcastle scorpion skeleton snowflake spaceship sunflower telescope thunder tornado treasure umbrella vacation volcano waterfall whirlwind wildfire wizardry".split(" "),
+};
+let best = 0; try { best = +localStorage.getItem("typingDefense.best") || 0; } catch {}
+let G = { state: "intro" };
+const FW = 800, FH = 600, BASE_Y = 560;
+
+function start() {
+  G = { state: "play", wave: 0, score: 0, lives: 5, enemies: [], target: null, shots: [], booms: [], toSpawn: 0, spawnT: 0, breakT: 0,
+        keys: 0, good: 0, chars: 0, t0: performance.now(), shake: 0 };
+  nextWave(); show(false); hud();
+}
+function nextWave() {
+  G.wave++; G.toSpawn = 4 + G.wave * 2; G.spawnT = 1; G.breakT = 0; G.banner = { text: `Wave ${G.wave}`, t: 1.6 };
+}
+function pickWord() {
+  const w = G.wave, r = Math.random();
+  const pool = w < 2 ? (r < .7 ? "short" : "medium") : w < 5 ? (r < .35 ? "short" : r < .85 ? "medium" : "long") : (r < .2 ? "short" : r < .6 ? "medium" : "long");
+  const used = new Set(G.enemies.map(e => e.word[0]));
+  const list = WORDS[pool];
+  for (let tries = 0; tries < 30; tries++) { const word = list[Math.floor(Math.random() * list.length)]; if (!used.has(word[0])) return word; }
+  return list[Math.floor(Math.random() * list.length)];
+}
+function spawn() {
+  const word = pickWord();
+  G.enemies.push({ word, typed: 0, x: 70 + Math.random() * (FW - 140), y: -20, speed: 18 + G.wave * 4 + Math.random() * 10 + (word.length < 5 ? 10 : 0), wob: Math.random() * 6 });
+}
+function key(ch) {
+  if (G.state !== "play") { if (G.state !== "play" && /^[a-z]$/.test(ch)) start(); return; }
+  if (!/^[a-z]$/.test(ch)) return;
+  G.keys++;
+  if (!G.target) {
+    // lock on to the closest enemy whose word starts with this letter
+    const c = G.enemies.filter(e => e.word[0] === ch).sort((a, b) => b.y - a.y)[0];
+    if (!c) { miss(); return; }
+    G.target = c;
+  }
+  const e = G.target;
+  if (e.word[e.typed] === ch) {
+    e.typed++; G.good++; G.chars++;
+    if (e.typed === e.word.length) {
+      G.shots.push({ x: e.x, y: e.y, t: 0 });
+      G.booms.push({ x: e.x, y: e.y, t: 0, word: e.word });
+      G.score += e.word.length * 10 + G.wave * 5;
+      G.enemies = G.enemies.filter(q => q !== e); G.target = null;
+    }
+  } else miss();
+  hud();
+}
+function miss() { G.shake = 0.15; hud(); }
+function release() { if (G.target) { G.target.typed = 0; G.target = null; } }
+function hud() {
+  document.getElementById("wave").textContent = G.wave || 1;
+  document.getElementById("score").textContent = G.score || 0;
+  const mins = G.t0 ? (performance.now() - G.t0) / 60000 : 0;
+  document.getElementById("wpm").textContent = mins > 0.05 ? Math.round(G.chars / 5 / mins) : 0;
+  document.getElementById("acc").textContent = G.keys ? Math.round(G.good / G.keys * 100) : 100;
+}
+function update(dt) {
+  for (const s of G.shots || []) s.t += dt;
+  for (const b of G.booms || []) b.t += dt;
+  if (G.shots) { G.shots = G.shots.filter(s => s.t < 0.15); G.booms = G.booms.filter(b => b.t < 0.6); }
+  if (G.state !== "play") return;
+  G.shake = Math.max(0, G.shake - dt);
+  if (G.banner) { G.banner.t -= dt; if (G.banner.t <= 0) G.banner = null; }
+  if (G.toSpawn > 0) {
+    G.spawnT -= dt;
+    if (G.spawnT <= 0) { spawn(); G.toSpawn--; G.spawnT = Math.max(0.7, 2.6 - G.wave * 0.15) * (0.6 + Math.random() * 0.8); }
+  } else if (!G.enemies.length) {
+    G.breakT += dt; if (G.breakT > 1.5) nextWave();
+  }
+  for (const e of G.enemies) {
+    e.y += e.speed * dt; e.wob += dt;
+    if (e.y >= BASE_Y - 10) { e.hit = true; G.lives--; G.shake = 0.3; G.booms.push({ x: e.x, y: BASE_Y, t: 0, bad: true }); if (G.target === e) G.target = null; }
+  }
+  G.enemies = G.enemies.filter(e => !e.hit);
+  if (G.lives <= 0) {
+    G.state = "over";
+    const isBest = G.score > best; if (isBest) { best = G.score; try { localStorage.setItem("typingDefense.best", best); } catch {} }
+    document.getElementById("msgTitle").textContent = isBest ? `New best: ${G.score}!` : "The base has fallen";
+    document.getElementById("msgText").textContent = `You reached wave ${G.wave} at ${document.getElementById("wpm").textContent} wpm with ${document.getElementById("acc").textContent}% accuracy. Score ${G.score}, best ${best}. Press a letter to play again.`;
+    show(true);
+  }
+  if (Math.random() < 0.05) hud();
+}
+function show(v) { document.getElementById("msg").classList.toggle("hide", !v); }
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, view = { s: 1, ox: 0, oy: 0 };
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  const top = 64, s = Math.min(innerWidth / FW, (innerHeight - top) / FH);
+  view = { s, ox: (innerWidth - FW * s) / 2, oy: top + (innerHeight - top - FH * s) / 2 };
+}
+addEventListener("resize", resize);
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#07110b"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  const sh = G.shake ? (Math.random() - .5) * 8 : 0;
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * (view.ox + sh), DPR * view.oy);
+  ctx.strokeStyle = "rgba(125,255,155,.06)"; ctx.lineWidth = 1;
+  for (let x = 0; x <= FW; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, FH); ctx.stroke(); }
+  for (let y = 0; y <= FH; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(FW, y); ctx.stroke(); }
+  // base
+  ctx.fillStyle = "#123321"; ctx.fillRect(0, BASE_Y, FW, FH - BASE_Y);
+  ctx.fillStyle = "#7dff9b"; ctx.fillRect(0, BASE_Y, FW, 2);
+  for (let i = 0; i < 5; i++) { ctx.fillStyle = i < (G.lives ?? 5) ? "#7dff9b" : "#2a4a35"; ctx.fillRect(FW / 2 - 70 + i * 30, BASE_Y + 14, 20, 8); }
+  const tx = FW / 2, ty = BASE_Y - 4;
+  ctx.fillStyle = "#cfe9d6"; ctx.beginPath(); ctx.arc(tx, ty, 16, Math.PI, 0); ctx.fill();
+  const aim = G.target ? Math.atan2(G.target.y - ty, G.target.x - tx) : -Math.PI / 2;
+  ctx.strokeStyle = "#cfe9d6"; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + Math.cos(aim) * 26, ty + Math.sin(aim) * 26); ctx.stroke();
+  // shots
+  for (const s of G.shots || []) { ctx.strokeStyle = `rgba(125,255,155,${1 - s.t / .15})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(s.x, s.y); ctx.stroke(); }
+  // enemies
+  ctx.font = "600 18px ui-monospace, SFMono-Regular, Menlo, monospace"; ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const e of G.enemies || []) {
+    const x = e.x + Math.sin(e.wob * 2) * 3, y = e.y, w = ctx.measureText(e.word).width, isT = G.target === e;
+    ctx.fillStyle = isT ? "rgba(125,255,155,.18)" : "rgba(10,30,18,.85)"; ctx.strokeStyle = isT ? "#7dff9b" : "#2c5a3b"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.roundRect(x - w / 2 - 10, y - 15, w + 20, 30, 8); ctx.fill(); ctx.stroke();
+    const done = e.word.slice(0, e.typed), rest = e.word.slice(e.typed), dw = ctx.measureText(done).width;
+    ctx.fillStyle = "#7dff9b"; ctx.fillText(done, x - w / 2, y);
+    ctx.fillStyle = isT ? "#ffffff" : "#cfe9d6"; ctx.fillText(rest, x - w / 2 + dw, y);
+    ctx.fillStyle = "#ff6b6b"; ctx.beginPath(); ctx.moveTo(x - 6, y + 17); ctx.lineTo(x + 6, y + 17); ctx.lineTo(x, y + 25); ctx.fill();
+  }
+  for (const b of G.booms || []) {
+    ctx.strokeStyle = b.bad ? `rgba(255,107,107,${1 - b.t / .6})` : `rgba(125,255,155,${1 - b.t / .6})`; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(b.x, b.y, 10 + b.t * 70, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (G.banner) { ctx.fillStyle = `rgba(125,255,155,${Math.min(1, G.banner.t)})`; ctx.font = "700 40px system-ui"; ctx.textAlign = "center"; ctx.fillText(G.banner.text, FW / 2, FH / 2 - 40); }
+}
+
+// ---------- input & loop ----------
+const input = document.getElementById("type");
+const focus = () => input.focus({ preventScroll: true });
+addEventListener("pointerdown", e => { e.preventDefault(); focus(); if (G.state !== "play") start(); });
+input.addEventListener("keydown", e => {
+  if (e.key === "Backspace" || e.key === "Escape") { e.preventDefault(); release(); return; }
+  if (e.key.length === 1) { e.preventDefault(); key(e.key.toLowerCase()); }
+});
+// Phones with on-screen keyboards often send "input" events instead of usable keydowns.
+input.addEventListener("input", () => { for (const ch of input.value.toLowerCase()) key(ch); input.value = ""; });
+addEventListener("keydown", e => { if (document.activeElement !== input) { focus(); if (e.key.length === 1) { e.preventDefault(); key(e.key.toLowerCase()); } } });
+let last = performance.now();
+function frame(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; update(dt); render(); requestAnimationFrame(frame); }
+resize(); focus();
+window.__game = { get G() { return G; }, update, key, start, release };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
