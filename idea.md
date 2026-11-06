@@ -92,3 +92,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Jelly Stack** — built; see `jelly-stack/`.
 - **Ice Slide** — built; see `ice-slide/`.
 - **Pipe Flow** — built; see `pipe-flow/`.
+- **Echo Dash** — built; see `echo-dash/`.
