@@ -95,3 +95,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Echo Dash** — built; see `echo-dash/`.
 - **Lighthouse** — built; see `lighthouse/`.
 - **Typing Defense** — built; see `typing-defense/`.
+- **Shrink Snake** — built; see `shrink-snake/`.
