@@ -99,3 +99,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Hex Territory** — built; see `hex-territory/`.
 - **Market Stall** — built; see `market-stall/`.
 - **Sound Maze** — built; see `sound-maze/`.
+- **Block Saboteur** — built; see `block-saboteur/`.
