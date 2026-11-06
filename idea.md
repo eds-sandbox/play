@@ -100,3 +100,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Market Stall** — built; see `market-stall/`.
 - **Sound Maze** — built; see `sound-maze/`.
 - **Block Saboteur** — built; see `block-saboteur/`.
+- **Dungeon** — built; see `dungeon/`.
