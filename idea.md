@@ -91,3 +91,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Orbit Golf** — built; see `orbit-golf/`.
 - **Jelly Stack** — built; see `jelly-stack/`.
 - **Ice Slide** — built; see `ice-slide/`.
+- **Pipe Flow** — built; see `pipe-flow/`.
