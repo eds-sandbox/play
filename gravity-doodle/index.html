@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gravity Doodle</title>
+<style>
+  :root { --bg: #f4efe4; --ink: #2a2622; --muted: #7a7166; --accent: #e85d3f; --panel: rgba(255,252,245,.9); --border: #d9cfbf; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .hud { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; }
+  #info { top: 12px; left: 12px; padding: 10px 14px; }
+  h1 { margin: 0; font-size: 18px; }
+  #sub { color: var(--muted); font-size: 13px; }
+  #stats { display: flex; gap: 14px; margin-top: 4px; font-variant-numeric: tabular-nums; font-size: 14px; }
+  #stats b { color: var(--accent); }
+  .ink { width: 140px; height: 7px; border-radius: 4px; background: #e6dccb; overflow: hidden; margin-top: 6px; }
+  .ink > div { height: 100%; background: var(--ink); width: 100%; }
+  #bar { bottom: 12px; left: 50%; transform: translateX(-50%); padding: 6px; display: flex; gap: 6px; }
+  button { font: inherit; font-size: 14px; color: var(--ink); background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  #win { inset: 0; position: fixed; display: none; align-items: center; justify-content: center; background: rgba(244,239,228,.5); }
+  #win.show { display: flex; }
+  #win .card { background: #fff; border: 1px solid var(--border); border-radius: 16px; padding: 22px 28px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+  #win h2 { margin: 0 0 6px; color: var(--accent); }
+  #win p { margin: 0 0 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info" class="hud">
+  <h1>Gravity Doodle</h1>
+  <div id="sub">Draw lines to guide the balls into the cup.</div>
+  <div id="stats"><span>Level <b id="lvl">1</b></span><span>Caught <b id="caught">0</b>/<span id="need">10</span></span></div>
+  <div class="ink" title="Ink left"><div id="inkBar"></div></div>
+</div>
+<div id="bar" class="hud">
+  <button id="undoBtn" title="Remove last line (Z)">Undo line</button>
+  <button id="clearBtn" title="Clear all lines (C)">Clear</button>
+  <button id="restartBtn" title="Restart level (R)">Restart</button>
+</div>
+<div id="win"><div class="card"><h2 id="winTitle">Level done!</h2><p id="winText"></p><button class="primary" id="nextBtn">Next level →</button></div></div>
+<script>
+"use strict";
+const WW = 1000, WH = 700, R = 9, G = 900;
+// Each level: spawner x, cup centre, ink budget, fixed walls [x1,y1,x2,y2].
+const LEVELS = [
+  { spawn: 200, cup: [760, 640], ink: 900, need: 10, walls: [] },
+  { spawn: 150, cup: [850, 640], ink: 900, need: 10, walls: [[520, 330, 520, 700]] },
+  { spawn: 820, cup: [160, 640], ink: 800, need: 10, walls: [[320, 260, 700, 360], [450, 470, 450, 700]] },
+  { spawn: 120, cup: [800, 330], ink: 900, need: 10, walls: [[700, 330, 900, 330], [700, 330, 700, 700]] },
+  { spawn: 500, cup: [500, 640], ink: 700, need: 12, walls: [[380, 200, 620, 200], [400, 420, 400, 700], [600, 420, 600, 700]] },
+  { spawn: 900, cup: [140, 260], ink: 900, need: 10, walls: [[40, 260, 260, 260], [600, 150, 600, 520]] },
+  { spawn: 100, cup: [880, 640], ink: 700, need: 12, walls: [[220, 180, 480, 260], [520, 360, 780, 280], [220, 440, 520, 520], [700, 480, 700, 700]] },
+  { spawn: 500, cup: [500, 260], ink: 750, need: 10, walls: [[380, 260, 620, 260], [300, 100, 300, 420], [700, 100, 700, 420]] },
+];
+const state = { lvl: 0, balls: [], lines: [], caught: 0, ink: 0, spawnT: 0, won: false, drawing: null, pops: [] };
+
+function loadLevel(i) {
+  state.lvl = i; const L = LEVELS[i];
+  Object.assign(state, { balls: [], lines: [], caught: 0, ink: L.ink, spawnT: 0, won: false, drawing: null, pops: [] });
+  document.getElementById("win").classList.remove("show");
+  document.getElementById("lvl").textContent = i + 1;
+  document.getElementById("need").textContent = L.need;
+  hud();
+}
+function cupWalls(L) { const [cx, cy] = L.cup; return [[cx - 50, cy - 75, cx - 50, cy], [cx - 50, cy, cx + 50, cy], [cx + 50, cy, cx + 50, cy - 75]]; }
+function allSegments() {
+  const L = LEVELS[state.lvl], segs = [...L.walls, ...cupWalls(L)];
+  for (const line of state.lines) for (let k = 1; k < line.length; k++) segs.push([line[k - 1][0], line[k - 1][1], line[k][0], line[k][1]]);
+  if (state.drawing) for (let k = 1; k < state.drawing.length; k++) segs.push([state.drawing[k - 1][0], state.drawing[k - 1][1], state.drawing[k][0], state.drawing[k][1]]);
+  return segs;
+}
+function hud() {
+  document.getElementById("caught").textContent = Math.min(state.caught, LEVELS[state.lvl].need);
+  document.getElementById("inkBar").style.width = Math.max(0, state.ink / LEVELS[state.lvl].ink * 100) + "%";
+}
+
+function step(dt) {
+  const L = LEVELS[state.lvl];
+  state.spawnT -= dt;
+  if (state.spawnT <= 0 && !state.won) { state.spawnT = 0.55; state.balls.push({ x: L.spawn + (Math.random() - .5) * 20, y: 20, vx: (Math.random() - .5) * 30, vy: 0, hue: Math.random() * 360 }); }
+  const segs = allSegments(), sub = 4, h = dt / sub;
+  for (let s = 0; s < sub; s++) {
+    for (const b of state.balls) {
+      b.vy += G * h; b.x += b.vx * h; b.y += b.vy * h;
+      for (const [x1, y1, x2, y2] of segs) {
+        const dx = x2 - x1, dy = y2 - y1, len2 = dx * dx + dy * dy || 1;
+        let t = ((b.x - x1) * dx + (b.y - y1) * dy) / len2; t = Math.max(0, Math.min(1, t));
+        const px = x1 + dx * t, py = y1 + dy * t, ox = b.x - px, oy = b.y - py, d = Math.hypot(ox, oy);
+        if (d < R && d > 1e-6) {
+          const nx = ox / d, ny = oy / d; b.x += nx * (R - d); b.y += ny * (R - d);
+          const vn = b.vx * nx + b.vy * ny;
+          if (vn < 0) { b.vx -= 1.45 * vn * nx; b.vy -= 1.45 * vn * ny; b.vx *= 0.995; b.vy *= 0.995; }
+        }
+      }
+    }
+    // ball-ball
+    const bs = state.balls;
+    for (let i = 0; i < bs.length; i++) for (let j = i + 1; j < bs.length; j++) {
+      const a = bs[i], c = bs[j], dx = c.x - a.x, dy = c.y - a.y, d = Math.hypot(dx, dy);
+      if (d < 2 * R && d > 1e-6) {
+        const nx = dx / d, ny = dy / d, push = (2 * R - d) / 2;
+        a.x -= nx * push; a.y -= ny * push; c.x += nx * push; c.y += ny * push;
+        const rv = (c.vx - a.vx) * nx + (c.vy - a.vy) * ny;
+        if (rv < 0) { const imp = -0.9 * rv; a.vx -= imp * nx; a.vy -= imp * ny; c.vx += imp * nx; c.vy += imp * ny; }
+      }
+    }
+  }
+  const [cx, cy] = L.cup;
+  state.balls = state.balls.filter(b => {
+    if (b.x > cx - 50 && b.x < cx + 50 && b.y > cy - 60 && b.y < cy && Math.hypot(b.vx, b.vy) < 260) {
+      state.caught++; state.pops.push({ x: b.x, y: b.y, t: 0, hue: b.hue }); hud(); return false;
+    }
+    return b.y < WH + 40 && b.x > -40 && b.x < WW + 40;
+  });
+  if (!state.won && state.caught >= L.need) {
+    state.won = true;
+    const last = state.lvl === LEVELS.length - 1;
+    document.getElementById("winTitle").textContent = last ? "You beat every level!" : "Level done!";
+    document.getElementById("winText").textContent = `Used ${Math.round((1 - state.ink / L.ink) * 100)}% of your ink.`;
+    document.getElementById("nextBtn").textContent = last ? "Play again" : "Next level →";
+    setTimeout(() => document.getElementById("win").classList.add("show"), 500);
+  }
+  for (const p of state.pops) p.t += dt;
+  state.pops = state.pops.filter(p => p.t < 0.5);
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let view = { s: 1, ox: 0, oy: 0 }, DPR = 1;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  const top = 104, bottom = 60;
+  const s = Math.min((innerWidth - 16) / WW, (innerHeight - top - bottom) / WH);
+  view = { s, ox: (innerWidth - WW * s) / 2, oy: top + Math.max(0, (innerHeight - top - bottom - WH * s) / 2) };
+}
+addEventListener("resize", resize);
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function render() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#f4efe4"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * view.ox, DPR * view.oy);
+  // paper with faint grid
+  ctx.fillStyle = "#fffaf0"; ctx.fillRect(0, 0, WW, WH);
+  ctx.strokeStyle = "rgba(120,160,200,.18)"; ctx.lineWidth = 1;
+  for (let x = 0; x <= WW; x += 25) line(x, 0, x, WH);
+  for (let y = 0; y <= WH; y += 25) line(0, y, WW, y);
+  const L = LEVELS[state.lvl];
+  // spawner
+  ctx.fillStyle = "#2a2622"; ctx.beginPath(); ctx.moveTo(L.spawn - 26, 0); ctx.lineTo(L.spawn + 26, 0); ctx.lineTo(L.spawn + 12, 22); ctx.lineTo(L.spawn - 12, 22); ctx.fill();
+  // walls
+  ctx.lineCap = "round"; ctx.strokeStyle = "#8a7f72"; ctx.lineWidth = 10;
+  for (const w of L.walls) line(...w);
+  // cup
+  ctx.strokeStyle = "#e85d3f"; ctx.lineWidth = 8;
+  for (const w of cupWalls(L)) line(...w);
+  ctx.fillStyle = "rgba(232,93,63,.12)"; ctx.fillRect(L.cup[0] - 50, L.cup[1] - 75, 100, 75);
+  ctx.fillStyle = "#e85d3f"; ctx.font = "600 16px system-ui"; ctx.textAlign = "center";
+  ctx.fillText(`${Math.min(state.caught, L.need)}/${L.need}`, L.cup[0], L.cup[1] - 84);
+  // drawn lines (pencil)
+  ctx.strokeStyle = "#2a2622"; ctx.lineWidth = 4; ctx.lineJoin = "round";
+  for (const ln of [...state.lines, state.drawing].filter(Boolean)) {
+    ctx.beginPath(); ln.forEach(([x, y], k) => k ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+  }
+  // balls
+  for (const b of state.balls) {
+    ctx.fillStyle = `hsl(${b.hue} 70% 55%)`; ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(255,255,255,.5)"; ctx.beginPath(); ctx.arc(b.x - 3, b.y - 3, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const p of state.pops) {
+    ctx.strokeStyle = `hsla(${p.hue} 70% 55% / ${1 - p.t * 2})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p.x, p.y, R + p.t * 50, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+// ---------- input ----------
+const toWorld = e => [(e.clientX - view.ox) / view.s, (e.clientY - view.oy) / view.s];
+cv.addEventListener("pointerdown", e => { if (state.ink <= 0) return; cv.setPointerCapture(e.pointerId); state.drawing = [toWorld(e)]; });
+cv.addEventListener("pointermove", e => {
+  const d = state.drawing; if (!d) return;
+  const p = toWorld(e), last = d[d.length - 1], len = Math.hypot(p[0] - last[0], p[1] - last[1]);
+  if (len < 8) return;
+  if (len > state.ink) return finish();
+  state.ink -= len; d.push(p); hud();
+});
+function finish() { if (state.drawing && state.drawing.length > 1) state.lines.push(state.drawing); state.drawing = null; }
+cv.addEventListener("pointerup", finish); cv.addEventListener("pointercancel", finish);
+function lineLen(ln) { let s = 0; for (let k = 1; k < ln.length; k++) s += Math.hypot(ln[k][0] - ln[k - 1][0], ln[k][1] - ln[k - 1][1]); return s; }
+function undoLine() { const ln = state.lines.pop(); if (ln) { state.ink += lineLen(ln); hud(); } }
+function clearLines() { state.lines = []; state.ink = LEVELS[state.lvl].ink; hud(); }
+document.getElementById("undoBtn").onclick = undoLine;
+document.getElementById("clearBtn").onclick = clearLines;
+document.getElementById("restartBtn").onclick = () => loadLevel(state.lvl);
+document.getElementById("nextBtn").onclick = () => loadLevel((state.lvl + 1) % LEVELS.length);
+addEventListener("keydown", e => { const k = e.key.toLowerCase(); if (k === "z") undoLine(); if (k === "c") clearLines(); if (k === "r") loadLevel(state.lvl); });
+
+let last = performance.now();
+function frame(now) { const dt = Math.min(1 / 30, (now - last) / 1000); last = now; step(dt); render(); requestAnimationFrame(frame); }
+resize(); loadLevel(0);
+window.__game = { state, LEVELS, loadLevel, step };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
