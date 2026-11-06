@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipe Flow</title>
+<style>
+  :root { --text: #e9f1ef; --muted: #8fa6a1; --accent: #3fd0ff; --warn: #ffb84d; --panel: rgba(18,28,30,.88); --border: #2c3f42; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0e1517; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; gap: 10px; pointer-events: none; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #stats { text-align: right; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); }
+  #timer { color: var(--warn); font-weight: 600; }
+  #ff { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  #ff:hover { border-color: var(--accent); }
+  #over { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(5,10,12,.5); }
+  #over.show { display: flex; }
+  #over .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px 28px; text-align: center; }
+  #over h2 { margin: 0 0 6px; color: var(--accent); }
+  #over p { margin: 0 0 14px; color: var(--muted); }
+  #over button { font: inherit; font-weight: 600; background: var(--accent); color: #062430; border: 0; border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top">
+  <div><h1>Pipe Flow</h1><div class="muted">Tap a square to place the next pipe. Build a long path before the water arrives.</div></div>
+  <div id="stats"><div>Round <b id="round">1</b> · Score <b id="score">0</b></div><div class="muted">Pipes <span id="filled">0</span>/<span id="goal">8</span> · <span id="timer"></span></div></div>
+</div>
+<button id="ff" title="Speed up the water (F)">Fast flow ⏩</button>
+<div id="over"><div class="card"><h2 id="overTitle"></h2><p id="overText"></p><button id="overBtn"></button></div></div>
+<script>
+"use strict";
+const COLS = 9, ROWS = 7;
+const R = 1, D = 2, L = 4, U = 8;
+const DX = { 1: 1, 2: 0, 4: -1, 8: 0 }, DY = { 1: 0, 2: 1, 4: 0, 8: -1 }, OPP = { 1: 4, 2: 8, 4: 1, 8: 2 };
+const PIECES = [[R | L, 2], [U | D, 2], [R | D, 1.4], [D | L, 1.4], [L | U, 1.4], [U | R, 1.4], [15, 0.7]];
+function randomPiece() {
+  let r = Math.random() * PIECES.reduce((a, p) => a + p[1], 0);
+  for (const [m, w] of PIECES) { if ((r -= w) < 0) return m; }
+  return R | L;
+}
+
+let G, best = 0;
+try { best = +localStorage.getItem("pipeFlow.best") || 0; } catch {}
+function newGame() { G = { round: 1, score: 0 }; newRound(); }
+function newRound() {
+  const r = G.round;
+  Object.assign(G, {
+    grid: new Array(COLS * ROWS).fill(null), // {mask, used: bitmask of openings water has passed through}
+    queue: Array.from({ length: 5 }, randomPiece),
+    countdown: Math.max(6, 16 - r * 1.5), cellTime: Math.max(0.55, 2.2 - r * 0.25), goal: 6 + r * 2,
+    filled: 0, water: null, done: [], over: false, fast: false, flash: [],
+  });
+  // source somewhere away from the edge, pointing inward-ish
+  const sx = 1 + Math.floor(Math.random() * (COLS - 2)), sy = 1 + Math.floor(Math.random() * (ROWS - 2));
+  const dirs = [R, D, L, U].filter(d => { const nx = sx + DX[d] * 2, ny = sy + DY[d] * 2; return nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS; });
+  const out = dirs[Math.floor(Math.random() * dirs.length)];
+  G.source = { x: sx, y: sy, out };
+  G.grid[sy * COLS + sx] = { mask: out, used: 0, source: true };
+  document.getElementById("over").classList.remove("show");
+  hud();
+}
+function hud() {
+  document.getElementById("round").textContent = G.round;
+  document.getElementById("score").textContent = G.score;
+  document.getElementById("filled").textContent = G.filled;
+  document.getElementById("goal").textContent = G.goal;
+  document.getElementById("timer").textContent = G.countdown > 0 ? `Water in ${Math.ceil(G.countdown)}s` : "Flowing!";
+}
+function place(i) {
+  if (G.over) return;
+  const cell = G.grid[i];
+  if (cell && (cell.source || cell.used)) { G.flash.push({ i, t: performance.now() }); return; }
+  if (cell) G.score = Math.max(0, G.score - 5); // replacing costs points
+  G.grid[i] = { mask: G.queue.shift(), used: 0 };
+  G.queue.push(randomPiece());
+  hud();
+}
+
+function update(dt) {
+  if (G.over) return;
+  if (G.countdown > 0) { G.countdown -= dt * (G.fast ? 6 : 1); hud(); if (G.countdown > 0) return; startWater(); }
+  const w = G.water; if (!w) return;
+  w.p += dt / G.cellTime * (G.fast ? 6 : 1);
+  if (w.p >= 1) {
+    G.done.push({ x: w.x, y: w.y, from: w.from, to: w.to });
+    const nx = w.x + DX[w.to], ny = w.y + DY[w.to];
+    const cell = nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS ? G.grid[ny * COLS + nx] : null;
+    const enter = OPP[w.to];
+    if (!cell || cell.source || !(cell.mask & enter) || (cell.used & enter)) return endRound();
+    let to;
+    if (cell.mask === 15) to = OPP[enter]; // crossing goes straight
+    else to = cell.mask & ~enter;
+    cell.used |= enter | to;
+    const bonus = cell.mask === 15 && (cell.used === 15) ? 40 : 10;
+    G.filled++; G.score += bonus; hud();
+    G.water = { x: nx, y: ny, from: enter, to, p: w.p - 1 };
+  }
+}
+function startWater() {
+  const s = G.source;
+  G.water = { x: s.x, y: s.y, from: 0, to: s.out, p: 0 };
+}
+function endRound() {
+  G.over = true; G.water = null;
+  const passed = G.filled >= G.goal;
+  if (passed) { G.score += (G.filled - G.goal) * 5; }
+  if (!passed && G.score > best) { best = G.score; try { localStorage.setItem("pipeFlow.best", best); } catch {} }
+  document.getElementById("overTitle").textContent = passed ? `Round ${G.round} cleared!` : "The water spilled!";
+  document.getElementById("overText").textContent = passed
+    ? `${G.filled} pipes filled. Next round the water comes sooner and flows faster.`
+    : `You needed ${G.goal} pipes and filled ${G.filled}. Final score ${G.score}${G.score >= best ? " (best!)" : ` · best ${best}`}.`;
+  const btn = document.getElementById("overBtn");
+  btn.textContent = passed ? "Next round →" : "Play again";
+  btn.onclick = () => { if (passed) { G.round++; newRound(); } else newGame(); };
+  document.getElementById("over").classList.add("show");
+  hud();
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, geo = {};
+function resize() { DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR; }
+addEventListener("resize", resize);
+function layout() {
+  const narrow = innerWidth < 700, top = narrow ? 100 : 80, bottom = 64;
+  const qSpace = narrow ? 0 : 110, qBelow = narrow ? 90 : 0;
+  const cs = Math.floor(Math.min((innerWidth - 24 - qSpace) / COLS, (innerHeight - top - bottom - qBelow) / ROWS, 78));
+  const gw = cs * COLS, gh = cs * ROWS;
+  const ox = Math.round((innerWidth - gw - qSpace) / 2), oy = Math.round(top + (innerHeight - top - bottom - qBelow - gh) / 2);
+  geo = { cs, ox, oy, narrow, qx: narrow ? ox : ox + gw + 30, qy: narrow ? oy + gh + 16 : oy };
+}
+function edgePoint(cx, cy, cs, d) { return [cx + DX[d] * cs / 2, cy + DY[d] * cs / 2]; }
+function drawPipe(cx, cy, cs, mask, alpha = 1) {
+  ctx.lineCap = "butt";
+  for (const [w, col] of [[cs * .34, `rgba(120,140,145,${alpha})`], [cs * .22, `rgba(40,52,56,${alpha})`]]) {
+    ctx.strokeStyle = col; ctx.lineWidth = w;
+    for (const d of [R, D, L, U]) if (mask & d) { const [ex, ey] = edgePoint(cx, cy, cs, d); ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(ex, ey); ctx.stroke(); }
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(cx, cy, w / 2, 0, Math.PI * 2); ctx.fill();
+  }
+}
+function drawWater(cx, cy, cs, from, to, p) {
+  ctx.strokeStyle = "#3fd0ff"; ctx.lineWidth = cs * .16; ctx.lineCap = "round";
+  const a = from ? edgePoint(cx, cy, cs, from) : [cx, cy], b = edgePoint(cx, cy, cs, to);
+  const l1 = from ? cs / 2 : 0, l2 = cs / 2, total = l1 + l2, d = total * Math.min(1, p);
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]);
+  if (d <= l1) ctx.lineTo(a[0] + (cx - a[0]) * d / l1, a[1] + (cy - a[1]) * d / l1);
+  else { ctx.lineTo(cx, cy); const k = (d - l1) / l2; ctx.lineTo(cx + (b[0] - cx) * k, cy + (b[1] - cy) * k); }
+  ctx.stroke();
+}
+function render(now) {
+  layout();
+  const { cs, ox, oy } = geo;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#0e1517"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.fillStyle = "#16201f"; ctx.beginPath(); ctx.roundRect(ox - 6, oy - 6, cs * COLS + 12, cs * ROWS + 12, 10); ctx.fill();
+  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
+    const i = y * COLS + x, px = ox + x * cs, py = oy + y * cs, cell = G.grid[i];
+    ctx.fillStyle = hover === i && !G.over ? "#253433" : (x + y) % 2 ? "#1c2726" : "#1a2423";
+    ctx.fillRect(px + 1, py + 1, cs - 2, cs - 2);
+    if (!cell) continue;
+    const cx = px + cs / 2, cy = py + cs / 2;
+    if (cell.source) {
+      drawPipe(cx, cy, cs, cell.mask);
+      ctx.fillStyle = "#3fd0ff"; ctx.beginPath(); ctx.arc(cx, cy, cs * .26, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "#0e1517"; ctx.font = `700 ${cs * .22}px system-ui`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(G.countdown > 0 ? Math.ceil(G.countdown) : "", cx, cy + 1);
+    } else drawPipe(cx, cy, cs, cell.mask);
+  }
+  for (const s of G.done) drawWater(ox + (s.x + .5) * cs, oy + (s.y + .5) * cs, cs, s.from, s.to, 1);
+  if (G.water) { const w = G.water; drawWater(ox + (w.x + .5) * cs, oy + (w.y + .5) * cs, cs, w.from, w.to, w.p); }
+  for (let k = G.flash.length - 1; k >= 0; k--) {
+    const f = G.flash[k], a = 1 - (now - f.t) / 300; if (a <= 0) { G.flash.splice(k, 1); continue; }
+    ctx.strokeStyle = `rgba(255,90,90,${a})`; ctx.lineWidth = 3; ctx.strokeRect(ox + (f.i % COLS) * cs + 3, oy + ((f.i / COLS) | 0) * cs + 3, cs - 6, cs - 6);
+  }
+  // next pieces
+  const qs = geo.narrow ? Math.min(cs, 56) : Math.min(cs, 70);
+  ctx.fillStyle = "#8fa6a1"; ctx.font = "13px system-ui"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  ctx.fillText("Next", geo.qx, geo.qy - 4);
+  G.queue.forEach((m, k) => {
+    const x = geo.narrow ? geo.qx + k * (qs + 8) : geo.qx, y = geo.narrow ? geo.qy : geo.qy + k * (qs + 8);
+    ctx.fillStyle = k === 0 ? "#253433" : "#18211f"; ctx.beginPath(); ctx.roundRect(x, y, qs, qs, 8); ctx.fill();
+    if (k === 0) { ctx.strokeStyle = "#3fd0ff"; ctx.lineWidth = 2; ctx.stroke(); }
+    drawPipe(x + qs / 2, y + qs / 2, qs, m, k === 0 ? 1 : 0.6);
+  });
+}
+
+// ---------- input & loop ----------
+let hover = -1;
+function cellAt(e) { const x = Math.floor((e.clientX - geo.ox) / geo.cs), y = Math.floor((e.clientY - geo.oy) / geo.cs); return x >= 0 && y >= 0 && x < COLS && y < ROWS ? y * COLS + x : -1; }
+cv.addEventListener("pointermove", e => { hover = e.pointerType === "mouse" ? cellAt(e) : -1; });
+cv.addEventListener("pointerdown", e => { const i = cellAt(e); if (i >= 0) place(i); });
+const ff = () => { if (!G.over) G.fast = true; };
+document.getElementById("ff").onclick = ff;
+addEventListener("keydown", e => { if (e.key.toLowerCase() === "f") ff(); });
+let last = performance.now();
+function frame(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; update(dt); render(now); requestAnimationFrame(frame); }
+resize(); newGame();
+window.__game = { get G() { return G; }, update, place, newGame, COLS, ROWS };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
