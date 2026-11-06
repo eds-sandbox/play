@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Light Bender</title>
+<style>
+  :root {
+    --bg: #07080d;
+    --panel: rgba(18, 20, 30, 0.88);
+    --border: #2a2e42;
+    --text: #eef0f8;
+    --muted: #9298b0;
+    --accent: #ffcf70;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden;
+    -webkit-user-select: none; user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; align-items: center;
+    justify-content: space-between; gap: 12px; pointer-events: none; }
+  #top > * { pointer-events: auto; }
+  h1 { margin: 0; font-size: 19px; letter-spacing: .02em; }
+  #hint { color: var(--muted); font-size: 13px; margin-top: 2px; min-height: 18px; }
+  .nav { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+  .nav b { min-width: 74px; text-align: center; }
+  #moves { color: var(--muted); font-size: 13px; text-align: right; }
+
+  #bottom { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 7px;
+    backdrop-filter: blur(6px); flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - 32px); }
+  button { font: inherit; font-size: 14px; color: var(--text); background: #1c2030; border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 38px; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .35; cursor: default; }
+  button.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  button.primary { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
+  .piece { display: flex; align-items: center; gap: 7px; }
+  .piece svg { width: 18px; height: 18px; }
+  .count { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  .sep { width: 1px; background: var(--border); margin: 0 3px; }
+
+  #win { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(5, 6, 10, .45); }
+  #win.show { display: flex; }
+  #win .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px 28px;
+    text-align: center; backdrop-filter: blur(10px); animation: pop .35s ease-out; }
+  #win h2 { margin: 0 0 6px; color: var(--accent); font-size: 24px; }
+  #win p { margin: 0 0 16px; color: var(--muted); }
+  @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  @media (max-width: 560px) {
+    #top { flex-wrap: wrap; }
+    #hint { font-size: 12px; }
+    .nav b { min-width: 60px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="board"></canvas>
+
+<div id="top">
+  <div>
+    <h1>Light Bender</h1>
+    <div id="hint"></div>
+  </div>
+  <div>
+    <div class="nav">
+      <button id="prevBtn" title="Previous level">‹</button>
+      <b id="lvl">Level 1</b>
+      <button id="nextLvlBtn" title="Next level">›</button>
+    </div>
+    <div id="moves">0 moves</div>
+  </div>
+</div>
+
+<div id="bottom">
+  <button id="invMirror" class="piece" title="Mirror: reflects light 90°">
+    <svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="16" y2="4" stroke="#dfe6ff" stroke-width="3" stroke-linecap="round"/></svg>
+    Mirror <span class="count" id="cMirror">0</span>
+  </button>
+  <button id="invSplitter" class="piece" title="Splitter: lets light through and reflects it">
+    <svg viewBox="0 0 20 20"><line x1="4" y1="16" x2="16" y2="4" stroke="#8fd8ff" stroke-width="3" stroke-dasharray="3 2.5" stroke-linecap="round"/></svg>
+    Splitter <span class="count" id="cSplitter">0</span>
+  </button>
+  <div class="sep"></div>
+  <button id="undoBtn" title="Undo (Z)">Undo</button>
+  <button id="resetBtn" title="Restart level (R)">Restart</button>
+</div>
+
+<div id="win">
+  <div class="card">
+    <h2>All lit!</h2>
+    <p id="winText"></p>
+    <button class="primary" id="nextBtn">Next level →</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------- Core rules ----------
+// Directions: 0 right, 1 down, 2 left, 3 up (screen coordinates).
+const DX = [1, 0, -1, 0], DY = [0, 1, 0, -1];
+// Mirror orientation 0 is "/", 1 is "\". With this numbering both reflections are a single XOR.
+const reflect = (d, o) => (o === 0 ? d ^ 3 : d ^ 1);
+const RED = 1, GREEN = 2, BLUE = 4;
+const COLOR_NAME = { 1: "red", 2: "green", 3: "yellow", 4: "blue", 5: "magenta", 6: "cyan", 7: "white" };
+const rgbOf = m => [m & RED ? 255 : 40, m & GREEN ? 235 : 40, m & BLUE ? 255 : 50];
+const css = (m, a = 1) => { const [r, g, b] = rgbOf(m); return `rgba(${r},${g},${b},${a})`; };
+
+// Follow every beam. Returns the drawn segments, the colours reaching each receiver, and which cells were hit.
+function trace(size, cells) {
+  const segs = [], got = new Map(), hit = new Set(), seen = new Set(), stack = [];
+  cells.forEach((c, i) => { if (c && c.type === "emitter") stack.push([i % size, (i / size) | 0, c.dir, c.color]); });
+  while (stack.length) {
+    let [x, y, d, col] = stack.pop();
+    let run = null; // current straight segment, extended while the beam keeps its direction
+    const add = (x2, y2) => {
+      if (run && run.d === d) { run.s[2] = x2; run.s[3] = y2; }
+      else { const s = [x, y, x2, y2, col]; segs.push(s); run = { s, d }; }
+    };
+    for (let guard = 0; guard < 1000; guard++) {
+      const key = ((y * size + x) * 4 + d) * 8 + col;
+      if (seen.has(key)) break;
+      seen.add(key);
+      const nx = x + DX[d], ny = y + DY[d];
+      if (nx < 0 || ny < 0 || nx >= size || ny >= size) { add(x + DX[d] * 0.5, y + DY[d] * 0.5); break; }
+      const ni = ny * size + nx, c = cells[ni];
+      if (c && (c.type === "wall" || c.type === "emitter")) { add(x + DX[d] * 0.5, y + DY[d] * 0.5); break; }
+      add(nx, ny);
+      x = nx; y = ny;
+      if (!c) continue;
+      hit.add(ni);
+      if (c.type === "receiver") { got.set(ni, (got.get(ni) || 0) | col); break; }
+      if (c.type === "mirror") d = reflect(d, c.o);
+      else if (c.type === "splitter") stack.push([x, y, reflect(d, c.o), col]); // and the beam also continues straight
+    }
+  }
+  return { segs, got, hit };
+}
+
+function isSolved(size, cells, tr = trace(size, cells)) {
+  let any = false;
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (c && c.type === "receiver") { any = true; if ((tr.got.get(i) || 0) !== c.need) return false; }
+  }
+  return any;
+}
+
+// ---------- Level generator ----------
+// Build a solved board by walking each beam and dropping mirrors along it, put receivers
+// where beams end, then take pieces away / scramble them. Every level is solvable by construction.
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function params(n) {
+  return {
+    size: Math.min(9, 5 + Math.floor((n - 1) / 3)),
+    emitters: n < 4 ? 1 : n < 10 ? 2 : 3,
+    walls: n < 3 ? 0 : Math.min(8, 1 + Math.floor(n / 2)),
+    maxPieces: Math.min(11, 2 + Math.floor(n / 2)),
+    minPieces: Math.min(7, 2 + Math.floor(n / 3)),
+    placeChance: 0.38,
+    splitChance: n < 6 ? 0 : 0.3,
+    maxSplit: n < 6 ? 0 : n < 12 ? 1 : 2,
+    trayShare: n < 3 ? 0 : Math.min(0.75, 0.25 + n * 0.04),
+  };
+}
+
+function generateLevel(n) {
+  const rng = mulberry32(Math.imul(n, 2654435761) ^ 0x5eed1);
+  const P = params(n);
+  for (let attempt = 0; attempt < 2000; attempt++) {
+    const level = tryGenerate(rng, P);
+    if (level) return { ...level, number: n };
+  }
+  throw new Error("Could not generate level " + n);
+}
+
+function tryGenerate(rng, P) {
+  const S = P.size, cells = new Array(S * S).fill(null);
+  const ri = k => Math.floor(rng() * k);
+  const inside = (x, y) => x >= 0 && y >= 0 && x < S && y < S;
+
+  for (let k = 0; k < P.walls; k++) { const i = ri(S * S); if (!cells[i]) cells[i] = { type: "wall" }; }
+
+  const palette = [RED, GREEN, BLUE];
+  for (let i = 2; i > 0; i--) { const j = ri(i + 1); [palette[i], palette[j]] = [palette[j], palette[i]]; }
+
+  const emitters = [];
+  for (let e = 0; e < P.emitters; e++) {
+    for (let t = 0; t < 80; t++) {
+      const x = ri(S), y = ri(S), d = ri(4), i = y * S + x;
+      const onEdge = x === 0 || y === 0 || x === S - 1 || y === S - 1;
+      if (cells[i] || (!onEdge && rng() < 0.75)) continue;
+      if (!inside(x + DX[d], y + DY[d]) || cells[(y + DY[d]) * S + x + DX[d]]) continue;
+      cells[i] = { type: "emitter", dir: d, color: palette[e % 3] };
+      emitters.push(i);
+      break;
+    }
+  }
+  if (emitters.length < P.emitters) return null;
+
+  // Walk each beam and place pieces along the way.
+  const used = new Set();
+  let pieces = 0;
+  for (const ei of emitters) {
+    const stack = [[ei % S, (ei / S) | 0, cells[ei].dir]];
+    const seen = new Set(); // shared by all branches of this laser, so splitters can't loop forever
+    let splits = 0;
+    while (stack.length) {
+      let [x, y, d] = stack.pop();
+      let last = -1;
+      for (let g = 0; g < 300; g++) {
+        const nx = x + DX[d], ny = y + DY[d];
+        if (!inside(nx, ny)) break;
+        const ni = ny * S + nx, c = cells[ni];
+        if (c && c.type !== "mirror" && c.type !== "splitter") break;
+        if (seen.has(ni * 4 + d)) { last = -1; break; }
+        seen.add(ni * 4 + d);
+        x = nx; y = ny;
+        if (!c) {
+          if (pieces < P.maxPieces && !used.has(ni) && rng() < P.placeChance) {
+            const split = splits < P.maxSplit && rng() < P.splitChance;
+            const o = ri(2);
+            cells[ni] = { type: split ? "splitter" : "mirror", o };
+            pieces++;
+            if (split) { splits++; stack.push([x, y, reflect(d, o)]); } else d = reflect(d, o);
+            used.add(ni); last = -1;
+            continue;
+          }
+          used.add(ni); last = ni;
+        } else {
+          if (c.type === "mirror") d = reflect(d, c.o); else stack.push([x, y, reflect(d, c.o)]);
+          last = -1;
+        }
+      }
+      if (last >= 0 && !cells[last]) cells[last] = { type: "receiver", need: 0 };
+    }
+  }
+
+  // Keep only receivers that get light and pieces that are actually used.
+  const tr = trace(S, cells);
+  cells.forEach((c, i) => {
+    if (!c) return;
+    if (c.type === "receiver" && !tr.got.get(i)) cells[i] = null;
+    if ((c.type === "mirror" || c.type === "splitter") && !tr.hit.has(i)) cells[i] = null;
+  });
+  const receivers = [], pieceCells = [];
+  cells.forEach((c, i) => {
+    if (c && c.type === "receiver") { c.need = tr.got.get(i); receivers.push(i); }
+    if (c && (c.type === "mirror" || c.type === "splitter")) pieceCells.push(i);
+  });
+  if (pieceCells.length < P.minPieces || receivers.length < P.emitters) return null;
+  // Every receiver should need at least one piece to reach, otherwise it's a freebie.
+  const solution = cells.map(c => c && { ...c });
+
+  // Turn the solution into a puzzle.
+  const tray = { mirror: 0, splitter: 0 };
+  for (const i of pieceCells) {
+    if (rng() < P.trayShare) { tray[cells[i].type]++; cells[i] = null; }
+    else { cells[i].o = ri(2); cells[i].turnable = true; }
+  }
+  if (isSolved(S, cells)) {
+    const t = pieceCells.find(i => cells[i]);
+    if (t === undefined) return null;
+    cells[t].o ^= 1;
+    if (isSolved(S, cells)) return null;
+  }
+  // A receiver that is already lit correctly at the start is a freebie; reject those levels.
+  const startTrace = trace(S, cells);
+  if (receivers.some(i => (startTrace.got.get(i) || 0) === cells[i].need)) return null;
+  return { size: S, cells, tray, solution };
+}
+
+// ---------- Game state ----------
+const HINTS = {
+  1: "Tap a mirror to turn it. Light up the ring.",
+  2: "Every ring must get exactly its colour.",
+  3: "Tap an empty square to place a mirror from the tray.",
+  4: "Two lasers now. Each one needs its own ring.",
+  5: "Hold or right-click a placed piece to put it back in the tray.",
+  6: "Splitters let light pass straight through and reflect it too.",
+  10: "Colours mix: a ring may need two beams at once, like red + green = yellow.",
+};
+const STORE_KEY = "lightBender.best";
+const loadBest = () => { try { return Math.max(1, parseInt(localStorage.getItem(STORE_KEY), 10) || 1); } catch { return 1; } };
+const saveBest = n => { try { localStorage.setItem(STORE_KEY, String(n)); } catch {} };
+
+const game = { level: null, cells: [], tray: {}, history: [], moves: 0, won: false, best: loadBest(), selected: "mirror", wonAt: 0 };
+
+function loadLevel(n) {
+  const L = generateLevel(n);
+  game.level = L;
+  game.cells = L.cells.map(c => c && { ...c });
+  game.tray = { ...L.tray };
+  game.history = [];
+  game.moves = 0;
+  game.won = false;
+  game.selected = game.tray.mirror ? "mirror" : "splitter";
+  document.getElementById("win").classList.remove("show");
+  let hint = "";
+  for (const k of Object.keys(HINTS).map(Number).sort((a, b) => a - b)) if (k <= n) hint = HINTS[k];
+  document.getElementById("hint").textContent = HINTS[n] || (n > 10 ? "" : hint);
+  updateUI();
+}
+
+function snapshot() { game.history.push({ cells: game.cells.map(c => c && { ...c }), tray: { ...game.tray }, moves: game.moves }); }
+
+function act(fn) {
+  if (game.won) return;
+  snapshot();
+  if (fn() === false) { game.history.pop(); return; }
+  game.moves++;
+  checkWin();
+  updateUI();
+}
+
+function tapCell(i) {
+  const c = game.cells[i];
+  if (!c) {
+    let type = game.selected;
+    if (!game.tray[type]) type = game.tray.mirror ? "mirror" : game.tray.splitter ? "splitter" : null;
+    if (!type) { flash(i); return; }
+    act(() => { game.tray[type]--; game.cells[i] = { type, o: 0, placed: true }; });
+  } else if (c.turnable || c.placed) {
+    act(() => { c.o ^= 1; });
+  } else flash(i);
+}
+
+function pickUp(i) {
+  const c = game.cells[i];
+  if (!c || !c.placed) return;
+  act(() => { game.tray[c.type]++; game.cells[i] = null; });
+}
+
+function undo() {
+  const s = game.history.pop();
+  if (!s) return;
+  game.cells = s.cells; game.tray = s.tray; game.moves = s.moves; game.won = false;
+  document.getElementById("win").classList.remove("show");
+  updateUI();
+}
+
+function checkWin() {
+  if (!isSolved(game.level.size, game.cells)) return;
+  game.won = true;
+  game.wonAt = performance.now();
+  const n = game.level.number;
+  if (n + 1 > game.best) { game.best = n + 1; saveBest(game.best); }
+  document.getElementById("winText").textContent = `Level ${n} solved in ${game.moves} move${game.moves === 1 ? "" : "s"}.`;
+  setTimeout(() => { if (game.won) document.getElementById("win").classList.add("show"); }, 700);
+}
+
+function updateUI() {
+  const n = game.level.number;
+  document.getElementById("lvl").textContent = `Level ${n}`;
+  document.getElementById("moves").textContent = `${game.moves} move${game.moves === 1 ? "" : "s"}`;
+  document.getElementById("prevBtn").disabled = n <= 1;
+  document.getElementById("nextLvlBtn").disabled = n >= game.best;
+  document.getElementById("undoBtn").disabled = !game.history.length;
+  const total = game.level.tray;
+  for (const [type, id] of [["mirror", "Mirror"], ["splitter", "Splitter"]]) {
+    const btn = document.getElementById("inv" + id);
+    btn.style.display = total[type] ? "" : "none";
+    btn.classList.toggle("active", game.selected === type && total.mirror && total.splitter ? true : false);
+    document.getElementById("c" + id).textContent = game.tray[type];
+  }
+  document.querySelector("#bottom .sep").style.display = total.mirror || total.splitter ? "" : "none";
+}
+
+// ---------- Rendering ----------
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = 1, geo = { cs: 50, ox: 0, oy: 0 };
+const flashes = [];
+const flash = i => flashes.push({ i, t: performance.now() });
+
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+}
+addEventListener("resize", resize);
+
+function layout() {
+  const S = game.level.size;
+  const top = W < 560 ? 104 : 84, bottom = 84;
+  const cs = Math.floor(Math.min((W - 32) / S, (H - top - bottom) / S, 76));
+  geo = { cs, ox: Math.round((W - cs * S) / 2), oy: Math.round(top + (H - top - bottom - cs * S) / 2) };
+}
+
+function render(now) {
+  layout();
+  const { cs, ox, oy } = geo, S = game.level.size, cells = game.cells;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.fillStyle = "#07080d";
+  ctx.fillRect(0, 0, W, H);
+
+  // board
+  ctx.fillStyle = "#0e1019";
+  roundRect(ox - 6, oy - 6, cs * S + 12, cs * S + 12, 12); ctx.fill();
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const i = y * S + x, c = cells[i];
+    const px = ox + x * cs, py = oy + y * cs;
+    ctx.fillStyle = (x + y) % 2 ? "#141725" : "#121522";
+    if (hover === i && !game.won) ctx.fillStyle = "#1d2236";
+    ctx.fillRect(px + 1, py + 1, cs - 2, cs - 2);
+    if (c && c.type === "wall") {
+      ctx.fillStyle = "#2b2f40"; roundRect(px + 3, py + 3, cs - 6, cs - 6, 5); ctx.fill();
+      ctx.strokeStyle = "#3a3f55"; ctx.lineWidth = 1; ctx.stroke();
+    }
+  }
+
+  const tr = trace(S, cells);
+
+  // beams (additive, so crossing colours mix)
+  ctx.globalCompositeOperation = "lighter";
+  ctx.lineCap = "round";
+  const pulse = 0.85 + 0.15 * Math.sin(now / 180);
+  for (const [w, a] of [[cs * 0.32, 0.12], [cs * 0.14, 0.28], [Math.max(2, cs * 0.045), 0.95]]) {
+    ctx.lineWidth = w;
+    for (const [x1, y1, x2, y2, col] of tr.segs) {
+      ctx.strokeStyle = css(col, a * (w > 10 ? pulse : 1));
+      ctx.beginPath();
+      ctx.moveTo(ox + (x1 + 0.5) * cs, oy + (y1 + 0.5) * cs);
+      ctx.lineTo(ox + (x2 + 0.5) * cs, oy + (y2 + 0.5) * cs);
+      ctx.stroke();
+    }
+  }
+  ctx.globalCompositeOperation = "source-over";
+
+  // pieces
+  for (let i = 0; i < cells.length; i++) {
+    const c = cells[i];
+    if (!c || c.type === "wall") continue;
+    const cx = ox + (i % S + 0.5) * cs, cy = oy + (((i / S) | 0) + 0.5) * cs;
+    if (c.type === "emitter") drawEmitter(cx, cy, cs, c);
+    else if (c.type === "receiver") drawReceiver(cx, cy, cs, c, tr.got.get(i) || 0, now);
+    else drawMirror(cx, cy, cs, c);
+  }
+
+  // feedback when tapping something that can't change
+  for (let k = flashes.length - 1; k >= 0; k--) {
+    const f = flashes[k], age = (now - f.t) / 300;
+    if (age > 1) { flashes.splice(k, 1); continue; }
+    ctx.strokeStyle = `rgba(255,93,108,${1 - age})`; ctx.lineWidth = 2;
+    roundRect(ox + (f.i % S) * cs + 3, oy + ((f.i / S) | 0) * cs + 3, cs - 6, cs - 6, 6); ctx.stroke();
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function drawEmitter(cx, cy, cs, c) {
+  const s = cs * 0.36;
+  ctx.save(); ctx.translate(cx, cy); ctx.rotate(c.dir * Math.PI / 2);
+  ctx.fillStyle = "#23283a"; roundRect(-s, -s, s * 2, s * 2, s * 0.35); ctx.fill();
+  ctx.strokeStyle = css(c.color, 0.9); ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = css(c.color); ctx.beginPath();
+  ctx.moveTo(s * 1.05, 0); ctx.lineTo(s * 0.25, -s * 0.5); ctx.lineTo(s * 0.25, s * 0.5); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(-s * 0.35, 0, s * 0.28, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawReceiver(cx, cy, cs, c, got, now) {
+  const r = cs * 0.33, ok = got === c.need;
+  if (ok) {
+    const g = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, r * 1.6);
+    g.addColorStop(0, css(c.need, 0.55)); g.addColorStop(1, css(c.need, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, r * 1.6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = "#0b0d15"; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = Math.max(2.5, cs * 0.07);
+  ctx.strokeStyle = css(c.need, ok ? 1 : 0.75);
+  ctx.setLineDash(ok ? [] : [cs * 0.09, cs * 0.06]);
+  ctx.lineDashOffset = ok ? 0 : -now / 60;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  if (got) {
+    ctx.fillStyle = css(got, ok ? 1 : 0.6);
+    ctx.beginPath(); ctx.arc(cx, cy, r * (ok ? 0.55 : 0.35), 0, Math.PI * 2); ctx.fill();
+  }
+  if (got && !ok) { // wrong colour: small red cross
+    ctx.strokeStyle = "#ff5d6c"; ctx.lineWidth = 2;
+    const k = r * 0.25;
+    ctx.beginPath(); ctx.moveTo(cx + r * 0.75 - k, cy - r * 0.75 - k); ctx.lineTo(cx + r * 0.75 + k, cy - r * 0.75 + k);
+    ctx.moveTo(cx + r * 0.75 + k, cy - r * 0.75 - k); ctx.lineTo(cx + r * 0.75 - k, cy - r * 0.75 + k); ctx.stroke();
+  }
+}
+
+function drawMirror(cx, cy, cs, c) {
+  const h = cs * 0.36;
+  if (c.placed) { ctx.fillStyle = "rgba(255,207,112,0.08)"; roundRect(cx - cs / 2 + 3, cy - cs / 2 + 3, cs - 6, cs - 6, 6); ctx.fill(); }
+  if (c.turnable) { // marks a piece that can turn but not move
+    ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(cx, cy, cs * 0.42, 0, Math.PI * 2); ctx.stroke();
+  }
+  const dx = h, dy = c.o === 0 ? -h : h; // "/" goes up-right, "\" goes down-right
+  ctx.lineCap = "round";
+  if (c.type === "mirror") {
+    ctx.strokeStyle = "#5c6688"; ctx.lineWidth = Math.max(5, cs * 0.13);
+    ctx.beginPath(); ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy); ctx.stroke();
+    ctx.strokeStyle = "#e6ecff"; ctx.lineWidth = Math.max(2.5, cs * 0.06);
+    ctx.beginPath(); ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy); ctx.stroke();
+  } else {
+    ctx.strokeStyle = "rgba(143,216,255,0.35)"; ctx.lineWidth = Math.max(5, cs * 0.13);
+    ctx.beginPath(); ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy); ctx.stroke();
+    ctx.strokeStyle = "#bfeaff"; ctx.lineWidth = Math.max(2, cs * 0.045);
+    ctx.setLineDash([cs * 0.07, cs * 0.05]);
+    ctx.beginPath(); ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (c.placed) { // tiny dot: can be picked up
+    ctx.fillStyle = "rgba(255,207,112,0.8)";
+    ctx.beginPath(); ctx.arc(cx + cs * 0.36, cy + cs * 0.36, Math.max(2, cs * 0.04), 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// ---------- Input ----------
+let hover = -1, press = null;
+function cellFromEvent(e) {
+  const S = game.level.size;
+  const x = Math.floor((e.clientX - geo.ox) / geo.cs), y = Math.floor((e.clientY - geo.oy) / geo.cs);
+  return x >= 0 && y >= 0 && x < S && y < S ? y * S + x : -1;
+}
+canvas.addEventListener("pointermove", e => { hover = e.pointerType === "mouse" ? cellFromEvent(e) : -1; });
+canvas.addEventListener("pointerleave", () => { hover = -1; });
+canvas.addEventListener("pointerdown", e => {
+  const i = cellFromEvent(e);
+  if (i < 0 || e.button === 2) return;
+  press = { i, timer: setTimeout(() => { if (press && press.i === i) { pickUp(i); press = null; } }, 450) };
+});
+canvas.addEventListener("pointerup", e => {
+  if (!press) return;
+  clearTimeout(press.timer);
+  const i = cellFromEvent(e);
+  if (i === press.i) tapCell(i);
+  press = null;
+});
+canvas.addEventListener("pointercancel", () => { if (press) clearTimeout(press.timer); press = null; });
+canvas.addEventListener("contextmenu", e => { e.preventDefault(); const i = cellFromEvent(e); if (i >= 0) pickUp(i); });
+
+document.getElementById("invMirror").addEventListener("click", () => { game.selected = "mirror"; updateUI(); });
+document.getElementById("invSplitter").addEventListener("click", () => { game.selected = "splitter"; updateUI(); });
+document.getElementById("undoBtn").addEventListener("click", undo);
+document.getElementById("resetBtn").addEventListener("click", () => loadLevel(game.level.number));
+document.getElementById("prevBtn").addEventListener("click", () => loadLevel(game.level.number - 1));
+document.getElementById("nextLvlBtn").addEventListener("click", () => loadLevel(game.level.number + 1));
+document.getElementById("nextBtn").addEventListener("click", () => loadLevel(game.level.number + 1));
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k === "z" || (k === "z" && (e.ctrlKey || e.metaKey))) undo();
+  else if (k === "r") loadLevel(game.level.number);
+  else if ((k === "enter" || k === " ") && game.won) { e.preventDefault(); loadLevel(game.level.number + 1); }
+});
+
+function frame(now) { render(now); requestAnimationFrame(frame); }
+
+resize();
+loadLevel(game.best);
+window.__lightBender = { game, loadLevel, generateLevel, trace, isSolved }; // for testing in the console
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
