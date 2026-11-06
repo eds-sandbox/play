@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Stall</title>
+<style>
+  :root { --bg: #fff8ec; --card: #ffffff; --text: #33261a; --muted: #8a7562; --accent: #f08c1a; --good: #2f9e5b; --bad: #d64545; --border: #f0e2cc; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 920px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { margin: 0; font-size: 22px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .money { font-size: 26px; font-weight: 800; color: var(--good); font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; }
+  .card h2 { margin: 0 0 10px; font-size: 15px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .forecast { display: flex; gap: 12px; align-items: center; }
+  .forecast .icon { font-size: 44px; line-height: 1; }
+  .forecast b { font-size: 20px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td { padding: 5px 2px; border-bottom: 1px solid var(--border); }
+  td.n { text-align: right; }
+  button { font: inherit; font-size: 13px; color: var(--text); background: #fff4e3; border: 1px solid #f3d9b1; border-radius: 7px; padding: 4px 8px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.big { font-size: 16px; font-weight: 700; background: var(--accent); color: #fff; border: 0; padding: 12px 18px; border-radius: 10px; width: 100%; }
+  label.row { display: grid; grid-template-columns: 90px 1fr 54px; align-items: center; gap: 8px; margin: 8px 0; }
+  label.row output { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .stat { display: flex; justify-content: space-between; margin: 4px 0; font-variant-numeric: tabular-nums; }
+  .pos { color: var(--good); } .neg { color: var(--bad); }
+  #day { display: none; }
+  .street { position: relative; height: 120px; background: linear-gradient(#cfe9ff, #eaf5ff 70%, #d9c7a8 70%); border-radius: 12px; overflow: hidden; margin-bottom: 10px; }
+  .stand { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); font-size: 40px; }
+  .walker { position: absolute; bottom: 10px; font-size: 26px; transition: left linear; }
+  .bar { height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); }
+  .quote { font-style: italic; color: var(--muted); margin: 3px 0; }
+  #end { display: none; text-align: center; }
+  .chart { display: flex; align-items: flex-end; gap: 4px; height: 90px; margin: 12px 0; }
+  .chart div { flex: 1; background: var(--accent); border-radius: 3px 3px 0 0; min-height: 2px; }
+  .chart div.neg { background: var(--bad); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>🍋 Market Stall</h1><div class="muted" id="dayLabel">Day 1 of 14 · Fresh juice season</div></div>
+    <div style="text-align:right"><div class="money" id="cash">$20.00</div><div class="muted">Reputation <span id="rep">★★★☆☆</span></div></div>
+  </header>
+
+  <section id="plan">
+    <div class="grid">
+      <div class="card">
+        <h2>Tomorrow's forecast</h2>
+        <div class="forecast"><div class="icon" id="fIcon">☀️</div><div><b id="fText">Sunny</b><div id="fTemp" class="muted"></div><div id="fEvent" class="muted"></div></div></div>
+      </div>
+      <div class="card">
+        <h2>Supplies</h2>
+        <table id="supplies"></table>
+        <div class="muted" style="margin-top:6px">Fruit goes off after 3 days. Ice melts every night.</div>
+      </div>
+      <div class="card">
+        <h2>Recipe &amp; price</h2>
+        <label class="row">Fruit / cup <input type="range" id="rFruit" min="1" max="4" step="1" value="2"><output id="oFruit"></output></label>
+        <label class="row">Sugar / cup <input type="range" id="rSugar" min="0" max="4" step="1" value="2"><output id="oSugar"></output></label>
+        <label class="row">Ice / cup <input type="range" id="rIce" min="0" max="5" step="1" value="2"><output id="oIce"></output></label>
+        <label class="row">Price <input type="range" id="rPrice" min="0.25" max="4" step="0.05" value="1.50"><output id="oPrice"></output></label>
+        <div class="stat"><span class="muted">Ingredients per cup</span><span id="costPerCup"></span></div>
+        <div class="stat"><span class="muted">Cups you can make</span><span id="canMake"></span></div>
+      </div>
+    </div>
+    <div style="margin-top:12px"><button class="big" id="open">Open the stall →</button></div>
+  </section>
+
+  <section id="day" class="card">
+    <h2 id="dayTitle">Selling…</h2>
+    <div class="street" id="street"><div class="stand">🧃</div></div>
+    <div class="bar"><div id="dayBar"></div></div>
+    <div class="stat" id="liveRow" style="margin-top:8px"><span>Cups sold</span><b id="liveSold">0</b></div>
+    <div id="report" style="display:none">
+      <div class="stat"><span>Customers who walked by</span><span id="rWalk"></span></div>
+      <div class="stat"><span>Cups sold</span><span id="rSold"></span></div>
+      <div class="stat"><span>Takings</span><span id="rRev" class="pos"></span></div>
+      <div class="stat"><span>Spent on supplies today</span><span id="rCost" class="neg"></span></div>
+      <div class="stat"><b>Profit</b><b id="rProfit"></b></div>
+      <div id="quotes" style="margin-top:8px"></div>
+      <div style="margin-top:12px"><button class="big" id="next">Next morning →</button></div>
+    </div>
+  </section>
+
+  <section id="end" class="card">
+    <h2>Season over</h2>
+    <div class="money" id="endCash"></div>
+    <p id="endText"></p>
+    <div class="chart" id="chart"></div>
+    <div class="muted">Profit each day</div>
+    <div style="margin-top:14px"><button class="big" id="again">Play another season</button></div>
+  </section>
+</main>
+<script>
+"use strict";
+const DAYS = 14;
+const WEATHER = [
+  { k: "sunny", icon: "☀️", name: "Sunny", base: 60, t: [22, 30] },
+  { k: "cloudy", icon: "⛅", name: "Cloudy", base: 40, t: [16, 23] },
+  { k: "rain", icon: "🌧️", name: "Rainy", base: 16, t: [12, 18] },
+  { k: "heat", icon: "🔥", name: "Heatwave", base: 85, t: [31, 37] },
+];
+const EVENTS = [null, null, null, null, { name: "Street festival nearby: extra crowds!", mult: 1.7 }, { name: "Roadworks on your street: fewer people", mult: 0.6 }];
+const ITEMS = [
+  { k: "fruit", name: "Fruit", pack: 10, price: 3.5, unit: "" },
+  { k: "sugar", name: "Sugar", pack: 20, price: 2.0, unit: " scoops" },
+  { k: "cups", name: "Cups", pack: 25, price: 1.25, unit: "" },
+  { k: "ice", name: "Ice", pack: 50, price: 1.0, unit: " cubes" },
+];
+const fmt = v => (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
+let S;
+let best = 0; try { best = +localStorage.getItem("marketStall.best") || 0; } catch {}
+
+function newSeason() {
+  S = { day: 1, cash: 20, rep: 1, fruit: [], sugar: 0, cups: 0, ice: 0, history: [], spent: 0 };
+  newMorning();
+  show("plan");
+}
+function rand(a, b) { return a + Math.random() * (b - a); }
+function newMorning() {
+  const roll = Math.random(), w = roll < .4 ? 0 : roll < .7 ? 1 : roll < .88 ? 2 : 3;
+  const W = WEATHER[w];
+  S.weather = W; S.temp = Math.round(rand(...W.t));
+  S.event = EVENTS[Math.floor(Math.random() * EVENTS.length)];
+  S.prices = Object.fromEntries(ITEMS.map(it => [it.k, +(it.price * rand(0.8, 1.25)).toFixed(2)]));
+  S.spent = 0;
+  render();
+}
+const fruitCount = () => S.fruit.reduce((a, b) => a + b.n, 0);
+function buy(k) {
+  const it = ITEMS.find(i => i.k === k), cost = S.prices[k];
+  if (S.cash < cost) return;
+  S.cash -= cost; S.spent += cost;
+  if (k === "fruit") S.fruit.push({ n: it.pack, age: 0 }); else S[k] += it.pack;
+  render();
+}
+function recipe() {
+  return { fruit: +rFruit.value, sugar: +rSugar.value, ice: +rIce.value, price: +rPrice.value };
+}
+function quality(r, temp) {
+  const iceIdeal = Math.max(0, Math.min(5, (temp - 12) / 4));
+  const q = 1 - 0.2 * Math.abs(r.fruit - 2.4) - 0.14 * Math.abs(r.sugar - 2) - 0.09 * Math.abs(r.ice - iceIdeal);
+  return Math.max(0.05, Math.min(1, q));
+}
+function maxCups(r) {
+  const f = fruitCount();
+  return Math.min(Math.floor(f / r.fruit), r.sugar ? Math.floor(S.sugar / r.sugar) : Infinity, S.cups, r.ice ? Math.floor(S.ice / r.ice) : Infinity);
+}
+
+// One day of selling. Returns the result; mutates stock and cash.
+function simulateDay(r) {
+  const W = S.weather, temp = S.temp, q = quality(r, temp);
+  const crowd = (W.base + (temp - 20) * 2) * S.rep * (S.event ? S.event.mult : 1) * rand(0.85, 1.15);
+  const walkers = Math.max(3, Math.round(crowd));
+  let sold = 0, outOfStock = 0, tooPricey = 0, satisfaction = 0;
+  const sales = [];
+  for (let c = 0; c < walkers; c++) {
+    const mood = rand(0.7, 1.3);
+    const willPay = (0.9 + (temp - 15) * 0.05) * (0.2 + 1.25 * q) * mood;
+    if (r.price > willPay) { tooPricey++; sales.push(0); continue; }
+    if (maxCups(r) < 1) { outOfStock++; sales.push(0); continue; }
+    // use ingredients (oldest fruit first)
+    let need = r.fruit;
+    for (const b of S.fruit) { const t = Math.min(b.n, need); b.n -= t; need -= t; if (!need) break; }
+    S.fruit = S.fruit.filter(b => b.n > 0);
+    S.sugar -= r.sugar; S.ice -= r.ice; S.cups--;
+    sold++; sales.push(1);
+    satisfaction += Math.min(1.2, willPay / r.price) * q;
+  }
+  const revenue = sold * r.price;
+  S.cash += revenue;
+  // reputation follows how happy buyers were; turning people away hurts a little
+  const happy = sold ? satisfaction / sold : 0.5;
+  S.rep = Math.max(0.5, Math.min(1.6, S.rep + (happy - 0.55) * 0.25 - outOfStock / walkers * 0.15));
+  // overnight: ice melts, fruit ages
+  const melted = S.ice; S.ice = 0;
+  S.fruit.forEach(b => b.age++);
+  const spoiled = S.fruit.filter(b => b.age >= 3).reduce((a, b) => a + b.n, 0);
+  S.fruit = S.fruit.filter(b => b.age < 3);
+  const quotes = [];
+  const iceIdeal = Math.max(0, Math.min(5, (temp - 12) / 4));
+  if (tooPricey > walkers * 0.4) quotes.push("“Lovely, but way too expensive.”");
+  if (r.fruit < 2) quotes.push("“Tastes a bit watery.”"); else if (r.fruit > 3) quotes.push("“So much fruit it's like soup.”");
+  if (r.sugar < 1) quotes.push("“Ooh, sour!”"); else if (r.sugar > 3) quotes.push("“Sweet enough to hurt my teeth.”");
+  if (r.ice < iceIdeal - 1.5) quotes.push("“Not cold enough for this weather.”"); else if (r.ice > iceIdeal + 1.5) quotes.push("“Brr, it's all ice!”");
+  if (outOfStock > 0) quotes.push(`${outOfStock} customer${outOfStock > 1 ? "s" : ""} left because you ran out.`);
+  if (q > 0.85 && r.price <= (0.9 + (temp - 15) * 0.05) * 1.2) quotes.push("“Best juice in town!”");
+  if (melted) quotes.push(`<span class="muted">${melted} ice cubes melted overnight.</span>`);
+  if (spoiled) quotes.push(`<span class="muted">${spoiled} fruit went off.</span>`);
+  return { walkers, sold, revenue, sales, quotes, q };
+}
+
+// ---------- UI ----------
+const $ = id => document.getElementById(id);
+const rFruit = $("rFruit"), rSugar = $("rSugar"), rIce = $("rIce"), rPrice = $("rPrice");
+function show(id) { for (const s of ["plan", "day", "end"]) $(s).style.display = s === id ? "block" : "none"; }
+function render() {
+  $("dayLabel").textContent = `Day ${S.day} of ${DAYS} · Fresh juice season`;
+  $("cash").textContent = fmt(S.cash);
+  const stars = Math.round((S.rep - 0.5) / 1.1 * 4) + 1;
+  $("rep").textContent = "★".repeat(stars) + "☆".repeat(5 - stars);
+  $("fIcon").textContent = S.weather.icon; $("fText").textContent = S.weather.name;
+  $("fTemp").textContent = `${S.temp}°C`;
+  $("fEvent").textContent = S.event ? S.event.name : "";
+  const stock = { fruit: fruitCount(), sugar: S.sugar, cups: S.cups, ice: S.ice };
+  $("supplies").innerHTML = ITEMS.map(it => `<tr><td>${it.name}</td><td class="n">${stock[it.k]}${it.unit}</td><td class="n"><button data-buy="${it.k}" ${S.cash < S.prices[it.k] ? "disabled" : ""}>+${it.pack} for ${fmt(S.prices[it.k])}</button></td></tr>`).join("");
+  document.querySelectorAll("[data-buy]").forEach(b => b.onclick = () => buy(b.dataset.buy));
+  const r = recipe();
+  $("oFruit").textContent = r.fruit; $("oSugar").textContent = r.sugar; $("oIce").textContent = r.ice; $("oPrice").textContent = fmt(r.price);
+  const cpc = r.fruit * S.prices.fruit / 10 + r.sugar * S.prices.sugar / 20 + r.ice * S.prices.ice / 50 + S.prices.cups / 25;
+  $("costPerCup").textContent = fmt(cpc);
+  $("canMake").textContent = maxCups(r);
+}
+[rFruit, rSugar, rIce, rPrice].forEach(el => el.addEventListener("input", render));
+
+let animating = false;
+function openStall() {
+  if (animating) return;
+  const r = recipe(), cashBefore = S.cash + S.spent;
+  const res = simulateDay(r);
+  show("day"); $("report").style.display = "none"; $("liveRow").style.display = ""; $("dayTitle").textContent = `Day ${S.day}: ${S.weather.icon} ${S.weather.name}, ${S.temp}°C`;
+  const street = $("street"); street.querySelectorAll(".walker").forEach(w => w.remove());
+  animating = true;
+  const total = res.sales.length, dur = 4500, t0 = performance.now();
+  let shown = 0, soldSoFar = 0;
+  const people = ["🧑", "👩", "👨", "🧒", "👵", "👴", "🧑‍🦱", "👱", "🧕", "🧔"];
+  function tick(now) {
+    const k = Math.min(1, (now - t0) / dur);
+    $("dayBar").style.width = k * 100 + "%";
+    while (shown < Math.floor(k * total)) {
+      const bought = res.sales[shown++]; soldSoFar += bought;
+      if (shown % Math.max(1, Math.ceil(total / 25)) === 0) {
+        const w = document.createElement("div"); w.className = "walker";
+        w.textContent = people[shown % people.length] + (bought ? "🥤" : "");
+        const fromLeft = Math.random() < .5; w.style.left = fromLeft ? "-40px" : "calc(100% + 10px)";
+        street.appendChild(w);
+        requestAnimationFrame(() => { w.style.transitionDuration = "1.6s"; w.style.left = fromLeft ? "calc(100% + 10px)" : "-40px"; });
+        setTimeout(() => w.remove(), 1800);
+      }
+    }
+    $("liveSold").textContent = soldSoFar;
+    if (k < 1) requestAnimationFrame(tick); else finishDay(res, cashBefore);
+  }
+  requestAnimationFrame(tick);
+}
+function finishDay(res, cashBefore) {
+  animating = false;
+  const profit = S.cash - cashBefore;
+  S.history.push(profit);
+  $("rWalk").textContent = res.walkers; $("rSold").textContent = res.sold;
+  $("rRev").textContent = fmt(res.revenue); $("rCost").textContent = fmt(-S.spent);
+  $("rProfit").textContent = fmt(profit); $("rProfit").className = profit >= 0 ? "pos" : "neg";
+  $("quotes").innerHTML = res.quotes.map(q => `<div class="quote">${q}</div>`).join("");
+  $("report").style.display = ""; $("liveRow").style.display = "none"; $("next").textContent = S.day >= DAYS ? "See the season results →" : "Next morning →";
+  $("cash").textContent = fmt(S.cash);
+}
+function nextMorning() {
+  if (S.day >= DAYS) return endSeason();
+  S.day++; newMorning(); show("plan");
+}
+function endSeason() {
+  const isBest = S.cash > best; if (isBest) { best = S.cash; try { localStorage.setItem("marketStall.best", best.toFixed(2)); } catch {} }
+  $("endCash").textContent = fmt(S.cash);
+  $("endText").textContent = (S.cash > 20 ? `You turned $20 into ${fmt(S.cash)}.` : `You ended with less than you started.`) + (isBest ? " That's your best season!" : ` Your best: ${fmt(best)}.`);
+  const max = Math.max(1, ...S.history.map(Math.abs));
+  $("chart").innerHTML = S.history.map(p => `<div class="${p < 0 ? "neg" : ""}" style="height:${Math.abs(p) / max * 100}%" title="${fmt(p)}"></div>`).join("");
+  show("end");
+}
+$("open").onclick = openStall;
+$("next").onclick = nextMorning;
+$("again").onclick = newSeason;
+newSeason();
+window.__game = { get S() { return S; }, simulateDay, buy, quality, newSeason, newMorning, maxCups, setRecipe: r => { rFruit.value = r.fruit; rSugar.value = r.sugar; rIce.value = r.ice; rPrice.value = r.price; render(); } };
+</script>
+</body>
+</html>
