@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Echo Dash</title>
+<style>
+  :root { --text: #f1f0ff; --muted: #9d98c7; --accent: #6ff7e8; --ghost: #ff5fa2; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #0a0816; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; gap: 10px; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #stats { text-align: right; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); font-size: 22px; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg.hide { display: none; }
+  #msg .card { background: rgba(16,12,36,.88); border: 1px solid #2f2860; border-radius: 16px; padding: 20px 26px; text-align: center; max-width: calc(100vw - 32px); }
+  #msg h2 { margin: 0 0 6px; color: var(--accent); }
+  #msg p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top">
+  <div><h1>Echo Dash</h1><div class="muted">Grab the orb. Every run comes back as a ghost.</div></div>
+  <div id="stats"><b id="round">0</b><div class="muted">orbs · <span id="ghosts">0</span> ghosts · best <span id="best">0</span></div></div>
+</div>
+<div id="msg"><div class="card"><h2 id="msgTitle">Echo Dash</h2><p id="msgText">Move with WASD / arrows, or hold the mouse or your finger where you want to go. Each time you grab the orb, the path you took replays as a ghost. Don't touch your past selves.<br><br>Press any key or tap to start.</p></div></div>
+<script>
+"use strict";
+const AW = 800, AH = 560, PR = 11, SPEED = 250, SAFE = 0.9, STEP = 1 / 60;
+let best = 0; try { best = +localStorage.getItem("echoDash.best") || 0; } catch {}
+const G = { state: "intro", round: 0, ghosts: [], rec: [], t: 0, p: { x: AW / 2, y: AH / 2 }, orb: null, flash: 0, parts: [] };
+
+function newOrb() {
+  let x, y;
+  do { x = 50 + Math.random() * (AW - 100); y = 50 + Math.random() * (AH - 100); } while (Math.hypot(x - AW / 2, y - AH / 2) < 180);
+  G.orb = { x, y };
+}
+function start() {
+  Object.assign(G, { state: "play", round: 0, ghosts: [], rec: [], t: 0, p: { x: AW / 2, y: AH / 2 } });
+  newOrb(); show(false); hud();
+}
+function nextRound() {
+  G.ghosts.push(G.rec);
+  G.rec = []; G.t = 0; G.p = { x: AW / 2, y: AH / 2 }; G.round++; G.flash = 1;
+  for (let i = 0; i < 18; i++) G.parts.push({ x: G.orb.x, y: G.orb.y, vx: (Math.random() - .5) * 400, vy: (Math.random() - .5) * 400, life: 0.6 });
+  newOrb(); hud();
+}
+function die() {
+  G.state = "dead";
+  const isBest = G.round > best;
+  if (isBest) { best = G.round; try { localStorage.setItem("echoDash.best", best); } catch {} }
+  document.getElementById("msgTitle").textContent = isBest ? `New best: ${G.round} orbs!` : `Caught by your past self`;
+  document.getElementById("msgText").textContent = `You grabbed ${G.round} orb${G.round === 1 ? "" : "s"} while dodging ${G.ghosts.length} ghost${G.ghosts.length === 1 ? "" : "s"}. Press a key or tap to try again.`;
+  show(true); hud();
+}
+function show(v) { document.getElementById("msg").classList.toggle("hide", !v); }
+function hud() {
+  document.getElementById("round").textContent = G.round;
+  document.getElementById("ghosts").textContent = G.ghosts.length;
+  document.getElementById("best").textContent = best;
+}
+// A ghost replays its recording from the start of each round, then loops.
+function ghostAt(rec, t) {
+  if (!rec.length) return null;
+  const k = Math.floor(t / STEP) % (rec.length + Math.round(SAFE / STEP));
+  if (k >= rec.length) return null; // between loops it's gone for a moment
+  return { x: rec[k][0], y: rec[k][1], safe: k * STEP < SAFE };
+}
+
+const keys = new Set();
+let pointer = null;
+function update(dt) {
+  for (const q of G.parts) { q.x += q.vx * dt; q.y += q.vy * dt; q.life -= dt; }
+  G.parts = G.parts.filter(q => q.life > 0);
+  G.flash = Math.max(0, G.flash - dt * 2);
+  if (G.state !== "play") return;
+  let dx = 0, dy = 0;
+  if (keys.has("arrowleft") || keys.has("a")) dx--;
+  if (keys.has("arrowright") || keys.has("d")) dx++;
+  if (keys.has("arrowup") || keys.has("w")) dy--;
+  if (keys.has("arrowdown") || keys.has("s")) dy++;
+  if (pointer) { const tx = pointer.x - G.p.x, ty = pointer.y - G.p.y, l = Math.hypot(tx, ty); if (l > 6) { dx = tx / l; dy = ty / l; } }
+  const l = Math.hypot(dx, dy);
+  if (l > 0) { G.p.x += dx / l * SPEED * dt; G.p.y += dy / l * SPEED * dt; }
+  G.p.x = Math.max(PR, Math.min(AW - PR, G.p.x)); G.p.y = Math.max(PR, Math.min(AH - PR, G.p.y));
+  G.rec.push([G.p.x, G.p.y]);
+  G.t += dt;
+  if (G.t > SAFE) for (const rec of G.ghosts) {
+    const g = ghostAt(rec, G.t);
+    if (g && !g.safe && Math.hypot(g.x - G.p.x, g.y - G.p.y) < PR * 1.8) return die();
+  }
+  if (Math.hypot(G.orb.x - G.p.x, G.orb.y - G.p.y) < PR + 12) nextRound();
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, view = { s: 1, ox: 0, oy: 0 };
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  const top = 70, s = Math.min((innerWidth - 16) / AW, (innerHeight - top - 16) / AH);
+  view = { s, ox: (innerWidth - AW * s) / 2, oy: top + (innerHeight - top - 16 - AH * s) / 2 };
+}
+addEventListener("resize", resize);
+function render(now) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#0a0816"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * view.ox, DPR * view.oy);
+  ctx.fillStyle = `rgba(111,247,232,${0.03 + G.flash * 0.12})`; ctx.fillRect(0, 0, AW, AH);
+  ctx.strokeStyle = "#2f2860"; ctx.lineWidth = 2; ctx.strokeRect(0, 0, AW, AH);
+  ctx.strokeStyle = "rgba(120,110,200,.08)"; ctx.lineWidth = 1;
+  for (let x = 40; x < AW; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, AH); ctx.stroke(); }
+  for (let y = 40; y < AH; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(AW, y); ctx.stroke(); }
+  // spawn pad
+  ctx.strokeStyle = "rgba(111,247,232,.25)"; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.arc(AW / 2, AH / 2, 24, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  // ghosts with short trails
+  G.ghosts.forEach((rec, gi) => {
+    const hue = 330 - gi * 23;
+    for (let k = 12; k >= 0; k -= 3) {
+      const g = ghostAt(rec, Math.max(0, G.t - k * STEP));
+      if (!g) continue;
+      const a = (g.safe ? 0.25 : 0.9) * (1 - k / 14);
+      ctx.fillStyle = `hsla(${hue} 90% 65% / ${a})`; ctx.beginPath(); ctx.arc(g.x, g.y, PR * (1 - k / 30), 0, Math.PI * 2); ctx.fill();
+    }
+  });
+  // orb
+  if (G.orb) {
+    const pulse = 1 + 0.15 * Math.sin(now / 160);
+    const grd = ctx.createRadialGradient(G.orb.x, G.orb.y, 2, G.orb.x, G.orb.y, 26 * pulse);
+    grd.addColorStop(0, "rgba(255,240,150,1)"); grd.addColorStop(1, "rgba(255,200,60,0)");
+    ctx.fillStyle = grd; ctx.beginPath(); ctx.arc(G.orb.x, G.orb.y, 26 * pulse, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff4b0"; ctx.beginPath(); ctx.arc(G.orb.x, G.orb.y, 8, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const q of G.parts) { ctx.fillStyle = `rgba(255,230,120,${q.life / .6})`; ctx.fillRect(q.x - 2, q.y - 2, 4, 4); }
+  // player
+  const blink = G.state === "play" && G.t < SAFE && Math.floor(now / 80) % 2;
+  ctx.fillStyle = G.state === "dead" ? "#ff5f7a" : "#6ff7e8";
+  ctx.globalAlpha = blink ? 0.4 : 1;
+  ctx.shadowColor = "#6ff7e8"; ctx.shadowBlur = 16;
+  ctx.beginPath(); ctx.arc(G.p.x, G.p.y, PR, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0; ctx.globalAlpha = 1;
+}
+
+// ---------- input & loop ----------
+function anyStart() { if (G.state !== "play") { start(); return true; } return false; }
+addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k.startsWith("arrow") || k === " ") e.preventDefault();
+  if (anyStart()) return;
+  keys.add(k);
+});
+addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => { keys.clear(); pointer = null; });
+const toWorld = e => ({ x: (e.clientX - view.ox) / view.s, y: (e.clientY - view.oy) / view.s });
+cv.addEventListener("pointerdown", e => { if (anyStart()) return; cv.setPointerCapture(e.pointerId); pointer = toWorld(e); });
+cv.addEventListener("pointermove", e => { if (pointer) pointer = toWorld(e); });
+cv.addEventListener("pointerup", () => { pointer = null; });
+cv.addEventListener("pointercancel", () => { pointer = null; });
+let last = performance.now(), acc = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000); last = now;
+  while (acc >= STEP) { update(STEP); acc -= STEP; }
+  render(now); requestAnimationFrame(frame);
+}
+resize(); hud();
+window.__game = { G, update, start, ghostAt, AW, AH, setPointer: p => { pointer = p; } };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
