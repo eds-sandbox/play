@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shadow Match</title>
+<style>
+  :root {
+    --bg: #0f0d14;
+    --panel: rgba(20, 17, 28, 0.82);
+    --text: #f1ebe0;
+    --muted: #a49cb0;
+    --accent: #ffcf70;
+    --target: #46beff;
+    --bad: #ff5d6c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas#scene { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  canvas#scene.dragging { cursor: grabbing; }
+
+  .hud { position: fixed; pointer-events: none; }
+  .hud > * { pointer-events: auto; }
+  #info { top: 16px; left: 16px; }
+  #info h1 { margin: 0 0 2px; font-size: 20px; letter-spacing: .02em; }
+  #info .sub { color: var(--muted); font-size: 13px; }
+  #stats { margin-top: 8px; display: flex; gap: 14px; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); font-weight: 600; }
+
+  #compare { top: 16px; right: 16px; background: var(--panel); border-radius: 12px; padding: 10px;
+    width: 172px; backdrop-filter: blur(6px); }
+  #compare canvas { width: 152px; height: 152px; display: block; border-radius: 8px; background: #1d1926; }
+  #compare .label { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  #matchPct { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; background: #2b2536; border-radius: 3px; margin-top: 8px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0%; background: var(--accent); transition: width .12s; }
+  .legend { display: flex; gap: 8px; font-size: 11px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
+
+  #controls { bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+  button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid #3a3346;
+    border-radius: 10px; padding: 9px 14px; cursor: pointer; backdrop-filter: blur(6px); min-width: 44px; }
+  button:hover { border-color: var(--accent); }
+  button:active { transform: translateY(1px); }
+  button.primary { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
+
+  #help { bottom: 70px; left: 50%; transform: translateX(-50%); color: var(--muted); font-size: 12px;
+    text-align: center; width: max-content; max-width: calc(100vw - 32px); }
+
+  #win { inset: 0; display: none; align-items: center; justify-content: center; background: rgba(10, 8, 14, .35); }
+  #win.show { display: flex; }
+  #win .card { background: var(--panel); border: 1px solid #3a3346; border-radius: 16px; padding: 22px 26px;
+    text-align: center; min-width: 240px; backdrop-filter: blur(10px); animation: pop .35s ease-out; }
+  #win h2 { margin: 0 0 4px; font-size: 24px; color: var(--accent); }
+  #win .stars { font-size: 26px; letter-spacing: 4px; margin: 6px 0 10px; }
+  #win p { margin: 0 0 16px; color: var(--muted); }
+  @keyframes pop { from { transform: scale(.85); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  @media (max-width: 560px) {
+    #compare { width: 124px; padding: 8px; }
+    #compare canvas { width: 108px; height: 108px; }
+    .legend { display: none; }
+    #help { display: none; }
+    #info h1 { font-size: 17px; }
+    #info .sub { display: none; }
+    button { padding: 9px 11px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div id="info" class="hud">
+  <h1>Shadow Match</h1>
+  <div class="sub">Turn the shape until its shadow fills the blue outline.</div>
+  <div id="stats">
+    <span>Level <b id="lvl">1</b></span>
+    <span>Time <b id="time">0:00</b></span>
+    <span>Hints <b id="hints">0</b></span>
+  </div>
+</div>
+
+<div id="compare" class="hud">
+  <div class="label"><span>Shadow vs target</span><span id="matchPct">0%</span></div>
+  <canvas id="diff" width="128" height="128"></canvas>
+  <div class="bar"><div id="matchBar"></div></div>
+  <div class="legend">
+    <span><i style="background:#ffcf70"></i>match</span>
+    <span><i style="background:#ff5d6c"></i>extra</span>
+    <span><i style="background:#46beff"></i>missing</span>
+  </div>
+</div>
+
+<div id="help" class="hud">Drag to tilt · Shift+drag, scroll or Q/E to spin · Arrow keys work too · H for a hint</div>
+
+<div id="controls" class="hud">
+  <button id="rollL" title="Spin left (Q)">⟲</button>
+  <button id="hintBtn" title="Hint (H)">Hint</button>
+  <button id="skipBtn" title="New shape (N)">Skip</button>
+  <button id="rollR" title="Spin right (E)">⟳</button>
+</div>
+
+<div id="win" class="hud">
+  <div class="card">
+    <h2>Matched!</h2>
+    <div class="stars" id="stars">★★★</div>
+    <p id="winText"></p>
+    <button class="primary" id="nextBtn">Next level →</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ---------- Quaternion helpers ([w, x, y, z]) ----------
+const Q = {
+  mul(a, b) {
+    const [aw, ax, ay, az] = a, [bw, bx, by, bz] = b;
+    return [
+      aw * bw - ax * bx - ay * by - az * bz,
+      aw * bx + ax * bw + ay * bz - az * by,
+      aw * by - ax * bz + ay * bw + az * bx,
+      aw * bz + ax * by - ay * bx + az * bw,
+    ];
+  },
+  axis(ax, ang) { const s = Math.sin(ang / 2); return [Math.cos(ang / 2), ax[0] * s, ax[1] * s, ax[2] * s]; },
+  norm(a) { const l = Math.hypot(a[0], a[1], a[2], a[3]); return a.map(v => v / l); },
+  dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]; },
+  rot(q, v) {
+    const [w, x, y, z] = q, [vx, vy, vz] = v;
+    const tx = 2 * (y * vz - z * vy), ty = 2 * (z * vx - x * vz), tz = 2 * (x * vy - y * vx);
+    return [vx + w * tx + (y * tz - z * ty), vy + w * ty + (z * tx - x * tz), vz + w * tz + (x * ty - y * tx)];
+  },
+  slerp(a, b, t) {
+    let d = Q.dot(a, b);
+    if (d < 0) { b = b.map(v => -v); d = -d; }
+    if (d > 0.9995) return Q.norm(a.map((v, i) => v + (b[i] - v) * t));
+    const th = Math.acos(d), s = Math.sin(th);
+    const wa = Math.sin((1 - t) * th) / s, wb = Math.sin(t * th) / s;
+    return a.map((v, i) => wa * v + wb * b[i]);
+  },
+  random() {
+    const u1 = Math.random(), u2 = Math.random(), u3 = Math.random();
+    const a = Math.sqrt(1 - u1), b = Math.sqrt(u1);
+    return [a * Math.sin(2 * Math.PI * u2), a * Math.cos(2 * Math.PI * u2), b * Math.sin(2 * Math.PI * u3), b * Math.cos(2 * Math.PI * u3)];
+  },
+};
+
+const V = {
+  sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+  dot: (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2],
+  cross: (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]],
+  norm: a => { const l = Math.hypot(a[0], a[1], a[2]); return [a[0] / l, a[1] / l, a[2] / l]; },
+};
+
+// ---------- Shapes (polycubes) ----------
+const PRESETS = [
+  [[0,0,0],[1,0,0],[2,0,0],[0,1,0]],                    // L
+  [[0,0,0],[1,0,0],[2,0,0],[1,1,0],[1,0,1]],            // 3D T
+  [[0,0,0],[1,0,0],[1,1,0],[1,1,1],[2,1,1]],            // twisted stair
+  [[0,0,0],[0,1,0],[0,2,0],[1,0,0],[0,0,1],[0,2,1]],    // chair
+];
+const DIRS = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]];
+
+function randomPolycube(n) {
+  const cells = [[0, 0, 0]], set = new Set(["0,0,0"]);
+  while (cells.length < n) {
+    const c = cells[Math.floor(Math.random() * cells.length)];
+    const d = DIRS[Math.floor(Math.random() * 6)];
+    const nc = [c[0] + d[0], c[1] + d[1], c[2] + d[2]], k = nc.join(",");
+    if (!set.has(k)) { set.add(k); cells.push(nc); }
+  }
+  return cells;
+}
+
+function buildModel(voxels) {
+  const set = new Set(voxels.map(v => v.join(",")));
+  const c = [0, 1, 2].map(i => voxels.reduce((s, v) => s + v[i], 0) / voxels.length);
+  const faces = [];
+  const tangents = { 0: [[0,1,0],[0,0,1]], 1: [[0,0,1],[1,0,0]], 2: [[1,0,0],[0,1,0]] };
+  for (const v of voxels) {
+    for (const d of DIRS) {
+      if (set.has([v[0] + d[0], v[1] + d[1], v[2] + d[2]].join(","))) continue; // hidden internal face
+      const axis = d[0] ? 0 : d[1] ? 1 : 2;
+      const [u, w] = tangents[axis];
+      const fc = [0, 1, 2].map(i => v[i] + d[i] * 0.5 - c[i]);
+      const corners = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([a, b]) =>
+        [0, 1, 2].map(i => fc[i] + u[i] * a * 0.5 + w[i] * b * 0.5));
+      faces.push({ normal: d, corners, center: fc });
+    }
+  }
+  let R = 0;
+  for (const f of faces) for (const p of f.corners) R = Math.max(R, Math.hypot(p[0], p[1], p[2]));
+  const k = Math.min(1, 2.5 / R); // keep big shapes on the wall
+  for (const f of faces) {
+    f.corners = f.corners.map(p => p.map(x => x * k));
+    f.center = f.center.map(x => x * k);
+  }
+  return { faces, radius: R * k, size: voxels.length };
+}
+
+// Polygons of the shadow (projection along -Z) for a given orientation.
+// The silhouette of a closed solid = union of its light-facing faces.
+function shadowPolys(model, q) {
+  const polys = [];
+  for (const f of model.faces) {
+    if (Q.rot(q, f.normal)[2] <= 1e-4) continue;
+    polys.push(f.corners.map(p => { const r = Q.rot(q, p); return [r[0], r[1]]; }));
+  }
+  return polys;
+}
+
+// Add polygons to a path with consistent winding, so a single nonzero fill gives their union.
+function addUnionPath(ctx, polys2d) {
+  for (const poly of polys2d) {
+    let area = 0;
+    for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length];
+      area += a[0] * b[1] - b[0] * a[1];
+    }
+    const pts = area < 0 ? poly.slice().reverse() : poly;
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  }
+}
+
+// ---------- Mask comparison ----------
+const MASK = 128;
+const maskCanvas = document.createElement("canvas");
+maskCanvas.width = maskCanvas.height = MASK;
+const mctx = maskCanvas.getContext("2d", { willReadFrequently: true });
+
+function rasterize(polys, scale) {
+  mctx.clearRect(0, 0, MASK, MASK);
+  mctx.beginPath();
+  addUnionPath(mctx, polys.map(p => p.map(([x, y]) => [MASK / 2 + x * scale, MASK / 2 - y * scale])));
+  mctx.fillStyle = "#fff";
+  mctx.fill();
+  const data = mctx.getImageData(0, 0, MASK, MASK).data;
+  const out = new Uint8Array(MASK * MASK);
+  for (let i = 0; i < out.length; i++) out[i] = data[i * 4 + 3] > 127 ? 1 : 0;
+  return out;
+}
+
+function iou(a, b) {
+  let inter = 0, uni = 0;
+  for (let i = 0; i < a.length; i++) { inter += a[i] & b[i]; uni += a[i] | b[i]; }
+  return uni ? inter / uni : 0;
+}
+
+// ---------- Game state ----------
+const MATCH_AT = 0.94;
+const state = {
+  level: 1, model: null, q: [1, 0, 0, 0], target: [1, 0, 0, 0],
+  targetMask: null, curMask: null, match: 0, dirty: true,
+  hints: 0, startTime: 0, elapsed: 0, won: false, anim: null, hue: 40, maskScale: 1,
+};
+
+function setupLevel(level) {
+  const voxels = level <= PRESETS.length ? PRESETS[level - 1]
+    : randomPolycube(Math.min(9, 4 + Math.floor(level / 1.5)));
+  const model = buildModel(voxels);
+  state.model = model;
+  state.maskScale = (MASK / 2 - 4) / model.radius;
+  state.hue = (level * 47 + 20) % 360;
+
+  // Pick a target and start orientation that look clearly different.
+  let best = null;
+  for (let tries = 0; tries < 40; tries++) {
+    const target = Q.random(), start = Q.random();
+    const tm = rasterize(shadowPolys(model, target), state.maskScale);
+    const sm = rasterize(shadowPolys(model, start), state.maskScale);
+    const score = iou(tm, sm);
+    if (!best || score < best.score) best = { target, start, tm, score };
+    if (score < 0.5) break;
+  }
+  state.target = best.target;
+  state.targetMask = best.tm;
+  state.q = best.start;
+  state.level = level;
+  state.hints = 0;
+  state.won = false;
+  state.anim = null;
+  state.startTime = performance.now();
+  state.elapsed = 0;
+  state.dirty = true;
+  document.getElementById("win").classList.remove("show");
+  document.getElementById("lvl").textContent = level;
+  document.getElementById("hints").textContent = 0;
+}
+
+function applyRotation(axis, angle) {
+  if (state.won || state.anim) return;
+  state.q = Q.norm(Q.mul(Q.axis(axis, angle), state.q));
+  state.dirty = true;
+}
+
+function animateTo(to, ms, then) {
+  state.anim = { from: state.q, to, t0: performance.now(), ms, then };
+}
+
+function hint() {
+  if (state.won || state.anim) return;
+  state.hints++;
+  document.getElementById("hints").textContent = state.hints;
+  animateTo(Q.slerp(state.q, state.target, 0.45), 600);
+}
+
+function updateMatch() {
+  state.curMask = rasterize(shadowPolys(state.model, state.q), state.maskScale);
+  state.match = iou(state.curMask, state.targetMask);
+  drawDiff();
+  const pct = Math.round(state.match * 100);
+  document.getElementById("matchPct").textContent = pct + "%";
+  const bar = document.getElementById("matchBar");
+  bar.style.width = pct + "%";
+  bar.style.background = state.match >= MATCH_AT ? "#7be38f" : "var(--accent)";
+  if (!state.won && !state.anim && state.match >= MATCH_AT) win();
+}
+
+function win() {
+  state.won = true;
+  state.elapsed = performance.now() - state.startTime;
+  // Snap into the exact pose if we're close to it (shapes with symmetric shadows may match elsewhere).
+  const close = Math.abs(Q.dot(state.q, state.target)) > Math.cos(0.2);
+  const show = () => {
+    const secs = state.elapsed / 1000;
+    const stars = Math.max(1, 3 - state.hints - (secs > 60 ? 1 : 0));
+    document.getElementById("stars").textContent = "★".repeat(stars) + "☆".repeat(3 - stars);
+    document.getElementById("winText").textContent =
+      `Level ${state.level} in ${fmtTime(state.elapsed)}` + (state.hints ? ` · ${state.hints} hint${state.hints > 1 ? "s" : ""}` : " · no hints");
+    document.getElementById("win").classList.add("show");
+  };
+  if (close) {
+    const to = Q.dot(state.q, state.target) < 0 ? state.target.map(v => -v) : state.target;
+    animateTo(to, 350, show);
+  } else show();
+}
+
+function fmtTime(ms) {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// ---------- Rendering ----------
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const diffCanvas = document.getElementById("diff");
+const dctx = diffCanvas.getContext("2d");
+const diffImg = dctx.createImageData(MASK, MASK);
+
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+
+const WALL_Z = -5;
+const cam = { eye: [6, 3.2, 9.5], look: [0, 0.2, -1.8] };
+cam.f = V.norm(V.sub(cam.look, cam.eye));
+cam.r = V.norm(V.cross(cam.f, [0, 1, 0]));
+cam.u = V.cross(cam.r, cam.f);
+
+function project(p) {
+  const d = V.sub(p, cam.eye);
+  const z = V.dot(d, cam.f);
+  const focal = Math.min(W * 1.5, H * 1.55);
+  return [W / 2 + (V.dot(d, cam.r) / z) * focal, H * 0.52 - (V.dot(d, cam.u) / z) * focal];
+}
+
+function quad(pts, fill) {
+  ctx.beginPath();
+  pts.forEach((p, i) => { const s = project(p); i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]); });
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function drawWallShadow(polys, fill) {
+  ctx.beginPath();
+  addUnionPath(ctx, polys.map(poly => poly.map(([x, y]) => project([x, y, WALL_Z]))));
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+function render(now) {
+  const t = now / 1000;
+  // background
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#17131f"); bg.addColorStop(1, "#0b0a0f");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+  const FLOOR_Y = -3.4;
+  // floor
+  quad([[-7, FLOOR_Y, WALL_Z], [7, FLOOR_Y, WALL_Z], [7, FLOOR_Y, 8], [-7, FLOOR_Y, 8]], "#1c1824");
+
+  // lit wall with a soft spotlight
+  const wc = project([0, 0, WALL_Z]);
+  const edge = project([4.6, 0, WALL_Z]);
+  const rad = Math.hypot(edge[0] - wc[0], edge[1] - wc[1]) * 1.4;
+  const wallGrad = ctx.createRadialGradient(wc[0], wc[1], rad * 0.05, wc[0], wc[1], rad);
+  wallGrad.addColorStop(0, "#f6e9cf"); wallGrad.addColorStop(0.55, "#d9c6a5"); wallGrad.addColorStop(1, "#6d5f52");
+  quad([[-4.8, FLOOR_Y, WALL_Z], [4.8, FLOOR_Y, WALL_Z], [4.8, 4.6, WALL_Z], [-4.8, 4.6, WALL_Z]], wallGrad);
+
+  // target outline (cool tint) and the actual shadow
+  const pulse = state.won ? 0 : 0.06 * Math.sin(t * 3);
+  drawWallShadow(shadowPolys(state.model, state.target), `rgba(70,190,255,${0.42 + pulse})`);
+  drawWallShadow(shadowPolys(state.model, state.q), state.won ? "rgba(40,90,50,0.82)" : "rgba(28,22,36,0.8)");
+
+  // light beam hint: faint cone from the viewer side toward the wall
+  const beam = ctx.createLinearGradient(0, H, 0, 0);
+  beam.addColorStop(0, "rgba(255,220,150,0.05)"); beam.addColorStop(1, "rgba(255,220,150,0)");
+  ctx.fillStyle = beam; ctx.fillRect(0, 0, W, H);
+
+  // the object: painter's algorithm over visible faces
+  const keyLight = V.norm([0.6, 0.8, 0.5]);
+  const faces = [];
+  for (const f of state.model.faces) {
+    const n = Q.rot(state.q, f.normal);
+    const c = Q.rot(state.q, f.center);
+    const toFace = V.sub(c, cam.eye);
+    if (V.dot(n, toFace) >= 0) continue; // back face
+    faces.push({ pts: f.corners.map(p => project(Q.rot(state.q, p))), n, depth: V.dot(toFace, cam.f) });
+  }
+  faces.sort((a, b) => b.depth - a.depth);
+  ctx.lineJoin = "round";
+  for (const f of faces) {
+    const lam = 0.7 * Math.max(0, f.n[2]) + 0.35 * Math.max(0, V.dot(f.n, keyLight));
+    const light = 26 + 46 * Math.min(1, lam);
+    ctx.beginPath();
+    f.pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+    ctx.fillStyle = `hsl(${state.hue} 55% ${light}%)`;
+    ctx.fill();
+    ctx.strokeStyle = `hsla(${state.hue} 40% 12% / 0.55)`;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+  }
+}
+
+function drawDiff() {
+  const d = diffImg.data, a = state.curMask, b = state.targetMask;
+  for (let i = 0; i < a.length; i++) {
+    let r = 29, g = 25, bl = 38;
+    if (a[i] && b[i]) { r = 255; g = 207; bl = 112; }
+    else if (a[i]) { r = 255; g = 93; bl = 108; }
+    else if (b[i]) { r = 70; g = 190; bl = 255; }
+    d[i * 4] = r; d[i * 4 + 1] = g; d[i * 4 + 2] = bl; d[i * 4 + 3] = 255;
+  }
+  dctx.putImageData(diffImg, 0, 0);
+}
+
+// ---------- Input ----------
+const keys = new Set();
+let drag = null;
+
+canvas.addEventListener("pointerdown", e => {
+  drag = { x: e.clientX, y: e.clientY, roll: e.shiftKey || e.button === 2 };
+  canvas.setPointerCapture(e.pointerId);
+  canvas.classList.add("dragging");
+});
+canvas.addEventListener("pointermove", e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  const k = 0.009;
+  if (drag.roll || e.shiftKey) applyRotation([0, 0, 1], -dx * k);
+  else {
+    applyRotation([0, 1, 0], dx * k);
+    applyRotation([1, 0, 0], dy * k);
+  }
+});
+const endDrag = () => { drag = null; canvas.classList.remove("dragging"); };
+canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointercancel", endDrag);
+canvas.addEventListener("contextmenu", e => e.preventDefault());
+canvas.addEventListener("wheel", e => { e.preventDefault(); applyRotation([0, 0, 1], -e.deltaY * 0.002); }, { passive: false });
+
+window.addEventListener("keydown", e => {
+  const k = e.key.toLowerCase();
+  if (k === "h") hint();
+  else if (k === "n") setupLevel(state.level + (state.won ? 1 : 0));
+  else if ((k === "enter" || k === " ") && state.won) setupLevel(state.level + 1);
+  else keys.add(k);
+  if (k.startsWith("arrow") || k === " ") e.preventDefault();
+});
+window.addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
+window.addEventListener("blur", () => keys.clear());
+
+function holdButton(id, fn) {
+  const el = document.getElementById(id);
+  let timer = null;
+  const stop = () => { clearInterval(timer); timer = null; };
+  el.addEventListener("pointerdown", e => { e.preventDefault(); fn(); stop(); timer = setInterval(fn, 30); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach(ev => el.addEventListener(ev, stop));
+}
+holdButton("rollL", () => applyRotation([0, 0, 1], 0.05));
+holdButton("rollR", () => applyRotation([0, 0, 1], -0.05));
+document.getElementById("hintBtn").addEventListener("click", hint);
+document.getElementById("skipBtn").addEventListener("click", () => setupLevel(state.level + (state.won ? 1 : 0)));
+document.getElementById("nextBtn").addEventListener("click", () => setupLevel(state.level + 1));
+
+// ---------- Main loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  const sp = 1.8 * dt;
+  if (keys.has("arrowleft") || keys.has("a")) applyRotation([0, 1, 0], -sp);
+  if (keys.has("arrowright") || keys.has("d")) applyRotation([0, 1, 0], sp);
+  if (keys.has("arrowup") || keys.has("w")) applyRotation([1, 0, 0], -sp);
+  if (keys.has("arrowdown") || keys.has("s")) applyRotation([1, 0, 0], sp);
+  if (keys.has("q")) applyRotation([0, 0, 1], sp);
+  if (keys.has("e")) applyRotation([0, 0, 1], -sp);
+
+  if (state.anim) {
+    const a = state.anim;
+    const p = Math.min(1, (now - a.t0) / a.ms);
+    const ease = 1 - Math.pow(1 - p, 3);
+    state.q = Q.slerp(a.from, a.to, ease);
+    state.dirty = true;
+    if (p >= 1) { state.anim = null; a.then && a.then(); }
+  }
+
+  if (state.dirty) { updateMatch(); state.dirty = false; }
+  if (!state.won) document.getElementById("time").textContent = fmtTime(now - state.startTime);
+
+  render(now);
+  requestAnimationFrame(frame);
+}
+
+resize();
+setupLevel(1);
+window.__shadowMatch = { state, setupLevel, Q }; // handy for testing in the console
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
