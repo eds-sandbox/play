@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orbit Golf</title>
+<style>
+  :root { --text: #eef2ff; --muted: #94a0c4; --accent: #8cf5b0; --panel: rgba(12,16,32,.85); --border: #26304f; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05060f; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  #hud { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #score { text-align: right; font-variant-numeric: tabular-nums; }
+  #score b { color: var(--accent); }
+  #card { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(0,0,0,.4); }
+  #card.show { display: flex; }
+  #card .box { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 20px 24px; text-align: center; max-width: calc(100vw - 32px); }
+  #card h2 { margin: 0 0 8px; color: var(--accent); }
+  table { border-collapse: collapse; margin: 6px auto 14px; font-variant-numeric: tabular-nums; font-size: 13px; }
+  td, th { padding: 3px 6px; border-bottom: 1px solid var(--border); }
+  button { font: inherit; color: #06210f; background: var(--accent); border: 0; border-radius: 8px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div><h1>Orbit Golf</h1><div class="muted" id="tip">Drag back from anywhere and let go to shoot. Planets pull the ball.</div></div>
+  <div id="score"><div>Hole <b id="hole">1</b>/9 · Par <span id="par">2</span></div><div>Strokes <b id="strokes">0</b> · Total <span id="total">0</span></div></div>
+</div>
+<div id="card"><div class="box"><h2 id="cardTitle"></h2><div id="cardBody"></div><button id="cardBtn"></button></div></div>
+<script>
+"use strict";
+const WW = 1000, WH = 700, HOLE_R = 16, BALL_R = 6, MAX_V = 620, K = 2600, DT = 1 / 120, MAX_T = 14;
+// Planet mass is K * r^2, so bigger planets pull harder.
+const HOLES = [
+  { tee: [150, 350], hole: [850, 350], par: 2, planets: [[500, 350, 55]] },
+  { tee: [120, 600], hole: [880, 120], par: 2, planets: [[500, 370, 65]] },
+  { tee: [500, 630], hole: [500, 80], par: 2, planets: [[500, 350, 55]] },
+  { tee: [130, 350], hole: [870, 350], par: 3, planets: [[380, 250, 42], [620, 450, 42]] },
+  { tee: [150, 150], hole: [150, 560], par: 3, planets: [[300, 350, 40], [620, 350, 70]] },
+  { tee: [100, 100], hole: [900, 600], par: 3, planets: [[300, 330, 45], [700, 370, 45], [520, 180, 32]] },
+  { tee: [120, 350], hole: [560, 350], par: 3, planets: [[720, 350, 80], [340, 345, 30]] },
+  { tee: [100, 600], hole: [900, 100], par: 3, planets: [[430, 300, 42], [590, 410, 42]] },
+  { tee: [500, 640], hole: [500, 350], par: 4, planets: [[390, 350, 28], [610, 350, 28], [500, 240, 28], [500, 460, 28]] },
+];
+
+// Advance the ball one step; returns "sink", "crash", "lost" or null.
+function physicsStep(b, H) {
+  let ax = 0, ay = 0;
+  for (const [px, py, r] of H.planets) {
+    const dx = px - b.x, dy = py - b.y, d2 = dx * dx + dy * dy, d = Math.sqrt(d2);
+    if (d < r + BALL_R) return "crash";
+    const f = K * r * r / (d2 * d);
+    ax += dx * f; ay += dy * f;
+  }
+  b.vx += ax * DT; b.vy += ay * DT; b.x += b.vx * DT; b.y += b.vy * DT; b.t += DT;
+  if (Math.hypot(b.x - H.hole[0], b.y - H.hole[1]) < HOLE_R) return "sink";
+  if (b.x < -250 || b.x > WW + 250 || b.y < -250 || b.y > WH + 250 || b.t > MAX_T) return "lost";
+  return null;
+}
+function simulate(H, vx, vy) {
+  const b = { x: H.tee[0], y: H.tee[1], vx, vy, t: 0 };
+  for (;;) { const r = physicsStep(b, H); if (r) return r; }
+}
+
+const G = { hole: 0, strokes: 0, scores: [], ball: null, flying: false, aim: null, trail: [], msg: null, best: null, sunk: 0 };
+try { G.best = +localStorage.getItem("orbitGolf.best") || null; } catch {}
+function startHole(i) {
+  G.hole = i; G.strokes = 0; G.flying = false; G.trail = []; G.sunk = 0;
+  const H = HOLES[i]; G.ball = { x: H.tee[0], y: H.tee[1], vx: 0, vy: 0, t: 0 };
+  document.getElementById("card").classList.remove("show");
+  hud();
+}
+function hud() {
+  document.getElementById("hole").textContent = G.hole + 1;
+  document.getElementById("par").textContent = HOLES[G.hole].par;
+  document.getElementById("strokes").textContent = G.strokes;
+  document.getElementById("total").textContent = G.scores.reduce((a, b) => a + b, 0) + G.strokes;
+}
+function shoot(vx, vy) {
+  if (G.flying || G.sunk) return;
+  G.strokes++; G.flying = true; G.trail = [];
+  const H = HOLES[G.hole];
+  G.ball = { x: H.tee[0], y: H.tee[1], vx, vy, t: 0 };
+  hud();
+}
+function update() {
+  if (!G.flying) return;
+  const H = HOLES[G.hole];
+  for (let i = 0; i < 2; i++) {
+    const r = physicsStep(G.ball, H);
+    if (G.trail.length === 0 || Math.hypot(G.ball.x - G.trail[G.trail.length - 1][0], G.ball.y - G.trail[G.trail.length - 1][1]) > 6) G.trail.push([G.ball.x, G.ball.y]);
+    if (r === "sink") { G.flying = false; G.sunk = performance.now(); setTimeout(holeDone, 700); return; }
+    if (r) { G.flying = false; G.msg = { text: r === "crash" ? "Crashed! +1 stroke, back to the tee." : "Lost in space. Back to the tee.", t: performance.now() };
+      G.ball = { x: H.tee[0], y: H.tee[1], vx: 0, vy: 0, t: 0 }; return; }
+  }
+}
+function holeDone() {
+  G.scores.push(G.strokes);
+  const H = HOLES[G.hole], diff = G.strokes - H.par;
+  const name = G.strokes === 1 ? "Hole in one!" : diff <= -2 ? "Eagle!" : diff === -1 ? "Birdie!" : diff === 0 ? "Par" : diff === 1 ? "Bogey" : `+${diff}`;
+  const last = G.hole === HOLES.length - 1;
+  const total = G.scores.reduce((a, b) => a + b, 0), parTotal = HOLES.reduce((a, h) => a + h.par, 0);
+  document.getElementById("cardTitle").textContent = last ? `Round done: ${total} (${total - parTotal >= 0 ? "+" : ""}${total - parTotal})` : name;
+  let body = `<table><tr><th>Hole</th>${HOLES.map((_, i) => `<th>${i + 1}</th>`).join("")}</tr><tr><td>Par</td>${HOLES.map(h => `<td>${h.par}</td>`).join("")}</tr><tr><td>You</td>${HOLES.map((_, i) => `<td>${G.scores[i] ?? ""}</td>`).join("")}</tr></table>`;
+  if (last) {
+    if (!G.best || total < G.best) { G.best = total; try { localStorage.setItem("orbitGolf.best", total); } catch {} body += `<p>New best round!</p>`; }
+    else body += `<p class="muted">Best round: ${G.best}</p>`;
+  }
+  document.getElementById("cardBody").innerHTML = body;
+  document.getElementById("cardBtn").textContent = last ? "Play again" : "Next hole →";
+  document.getElementById("cardBtn").onclick = () => { if (last) G.scores = []; startHole(last ? 0 : G.hole + 1); };
+  document.getElementById("card").classList.add("show");
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, view = { s: 1, ox: 0, oy: 0 };
+const stars = Array.from({ length: 160 }, () => [Math.random() * WW, Math.random() * WH, Math.random()]);
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  const top = innerWidth < 600 ? 96 : 70;
+  const s = Math.min((innerWidth - 16) / WW, (innerHeight - top - 12) / WH);
+  view = { s, ox: (innerWidth - WW * s) / 2, oy: top + Math.max(0, (innerHeight - top - 12 - WH * s) / 2) };
+}
+addEventListener("resize", resize);
+const PLANET_COLORS = [["#ffb36b", "#a8431c"], ["#7fb2ff", "#2a3f9a"], ["#d68bff", "#5b2a8c"], ["#7ff0c8", "#1f7a62"], ["#ff8fa3", "#8c2a3d"]];
+function aimVelocity() {
+  if (!G.aim) return null;
+  const dx = G.aim.sx - G.aim.cx, dy = G.aim.sy - G.aim.cy, len = Math.hypot(dx, dy);
+  if (len < 6) return null;
+  const power = Math.min(1, len / 160) * MAX_V;
+  return [dx / len * power, dy / len * power, power / MAX_V];
+}
+function render(now) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#05060f"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * view.ox, DPR * view.oy);
+  ctx.strokeStyle = "rgba(120,140,220,.15)"; ctx.lineWidth = 1.5; ctx.strokeRect(0, 0, WW, WH);
+  for (const [x, y, b] of stars) { ctx.fillStyle = `rgba(255,255,255,${0.2 + b * 0.6})`; ctx.fillRect(x, y, 1.5, 1.5); }
+  const H = HOLES[G.hole];
+  // gravity hints
+  H.planets.forEach(([x, y, r], i) => {
+    const g = ctx.createRadialGradient(x, y, r, x, y, r * 3.2);
+    g.addColorStop(0, "rgba(140,170,255,.10)"); g.addColorStop(1, "rgba(140,170,255,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r * 3.2, 0, Math.PI * 2); ctx.fill();
+    const [c1, c2] = PLANET_COLORS[(G.hole + i) % PLANET_COLORS.length];
+    const pg = ctx.createRadialGradient(x - r * .4, y - r * .4, r * .1, x, y, r);
+    pg.addColorStop(0, c1); pg.addColorStop(1, c2);
+    ctx.fillStyle = pg; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  });
+  // hole (flag)
+  const [hx, hy] = H.hole, pulse = 1 + 0.08 * Math.sin(now / 250);
+  ctx.strokeStyle = "rgba(140,245,176,.35)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(hx, hy, HOLE_R * 1.8 * pulse, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = "#0a1a12"; ctx.beginPath(); ctx.arc(hx, hy, HOLE_R, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#8cf5b0"; ctx.lineWidth = 3; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(hx, hy); ctx.lineTo(hx, hy - 40); ctx.stroke();
+  ctx.fillStyle = "#8cf5b0"; ctx.beginPath(); ctx.moveTo(hx, hy - 40); ctx.lineTo(hx + 22, hy - 33); ctx.lineTo(hx, hy - 26); ctx.fill();
+  // tee
+  ctx.strokeStyle = "rgba(255,255,255,.25)"; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.arc(H.tee[0], H.tee[1], 14, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  // trail
+  ctx.strokeStyle = "rgba(255,230,160,.45)"; ctx.lineWidth = 2; ctx.beginPath();
+  G.trail.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+  // aim preview: only the first part of the path, so you still need to judge the curve
+  const v = !G.flying && !G.sunk && aimVelocity();
+  if (v) {
+    const b = { x: H.tee[0], y: H.tee[1], vx: v[0], vy: v[1], t: 0 };
+    ctx.fillStyle = "rgba(255,255,255,.8)";
+    for (let i = 0; i < 70; i++) { if (physicsStep(b, H)) break; if (i % 5 === 0) { ctx.beginPath(); ctx.arc(b.x, b.y, 2, 0, Math.PI * 2); ctx.fill(); } }
+    ctx.fillStyle = `hsl(${120 - v[2] * 120} 80% 60%)`;
+    ctx.fillRect(H.tee[0] - 25, H.tee[1] + 18, 50 * v[2], 5);
+  }
+  // ball
+  if (!G.sunk || now - G.sunk < 300) {
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(G.ball.x, G.ball.y, BALL_R * (G.sunk ? 1 - (now - G.sunk) / 300 : 1), 0, Math.PI * 2); ctx.fill();
+  }
+  if (G.msg && now - G.msg.t < 1800) {
+    ctx.fillStyle = `rgba(255,140,140,${1 - (now - G.msg.t) / 1800})`; ctx.font = "600 20px system-ui"; ctx.textAlign = "center";
+    ctx.fillText(G.msg.text, WW / 2, WH - 30);
+  }
+}
+
+// ---------- input ----------
+const toWorld = e => [(e.clientX - view.ox) / view.s, (e.clientY - view.oy) / view.s];
+cv.addEventListener("pointerdown", e => { if (G.flying || G.sunk) return; cv.setPointerCapture(e.pointerId); const [x, y] = toWorld(e); G.aim = { sx: x, sy: y, cx: x, cy: y }; });
+cv.addEventListener("pointermove", e => { if (!G.aim) return; const [x, y] = toWorld(e); G.aim.cx = x; G.aim.cy = y; });
+cv.addEventListener("pointerup", () => { const v = aimVelocity(); G.aim = null; if (v) shoot(v[0], v[1]); });
+cv.addEventListener("pointercancel", () => { G.aim = null; });
+
+function frame(now) { update(); render(now); requestAnimationFrame(frame); }
+resize(); startHole(0);
+window.__game = { G, HOLES, simulate, shoot, startHole, MAX_V };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
