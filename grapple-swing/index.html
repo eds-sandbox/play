@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grapple Swing</title>
+<style>
+  :root { --text: #f2eefc; --muted: #a49cc0; --accent: #ffcf70; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #120f22; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #hud { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; font-variant-numeric: tabular-nums; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #dist { font-size: 26px; font-weight: 700; color: var(--accent); text-align: right; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg .card { background: rgba(20,16,38,.85); border: 1px solid #3b3460; border-radius: 16px; padding: 20px 26px; text-align: center; }
+  #msg h2 { margin: 0 0 6px; color: var(--accent); }
+  #msg p { margin: 0; color: var(--muted); }
+  #msg.hide { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div><h1>Grapple Swing</h1><div class="muted">Hold to grab the nearest ring and reel in. Let go to fly.</div></div>
+  <div><div id="dist">0 m</div><div class="muted" id="best"></div></div>
+</div>
+<div id="msg"><div class="card"><h2 id="msgTitle">Grapple Swing</h2><p id="msgText">Hold mouse, touch or Space to swing. Don't touch the lava or the spikes.</p></div></div>
+<script>
+"use strict";
+const WH = 600, GRAV = 1500, RANGE = 340, REEL = 140, MIN_ROPE = 70, PR = 11;
+const STORE = "grappleSwing.best";
+const loadBest = () => { try { return +localStorage.getItem(STORE) || 0; } catch { return 0; } };
+let best = loadBest();
+
+let S;
+function reset() {
+  S = { x: 120, y: 260, px: 120 - 4, py: 260, anchors: [], spikes: [], rope: null, holding: false, dead: false, started: false, cam: 0, trail: [], t: 0 };
+  S.anchors.push({ x: 200, y: 150 });
+  while (S.anchors[S.anchors.length - 1].x < 2000) addAnchor();
+  S.rope = { a: S.anchors[0], len: Math.hypot(S.x - 200, S.y - 150) };
+  updateHud();
+}
+function addAnchor() {
+  const last = S.anchors[S.anchors.length - 1];
+  const hard = Math.min(1, last.x / 12000);
+  const x = last.x + 170 + Math.random() * (90 + 110 * hard);
+  const y = 80 + Math.random() * 230;
+  S.anchors.push({ x, y });
+  if (x > 1400 && Math.random() < 0.25 + 0.35 * hard) {
+    const sx = (last.x + x) / 2 + (Math.random() - .5) * 60;
+    S.spikes.push({ x: sx, top: 330 + Math.random() * (150 - 80 * hard), w: 34 });
+  }
+}
+function candidate() {
+  let bestA = null, bd = Infinity;
+  for (const a of S.anchors) {
+    if (a.x < S.x - 40) continue;
+    const d = Math.hypot(a.x - S.x, a.y - S.y);
+    if (d < RANGE && a.y < S.y + 40 && d < bd) { bd = d; bestA = a; }
+    if (a.x > S.x + RANGE) break;
+  }
+  return bestA;
+}
+function press() {
+  if (S.dead) { reset(); show(false); S.started = true; return; }
+  if (!S.started) { S.started = true; show(false); }
+  S.holding = true;
+  const a = candidate();
+  if (a && (!S.rope || S.rope.a !== a)) S.rope = { a, len: Math.hypot(a.x - S.x, a.y - S.y) };
+}
+function release() { S.holding = false; if (S.started) S.rope = null; }
+
+function step(h) {
+  if (!S.started || S.dead) return;
+  S.t += h;
+  let vx = (S.x - S.px) * 0.9995, vy = (S.y - S.py) * 0.9995;
+  S.px = S.x; S.py = S.y;
+  S.x += vx; S.y += vy + GRAV * h * h;
+  if (S.rope) {
+    if (S.holding) S.rope.len = Math.max(MIN_ROPE, S.rope.len - REEL * h);
+    const a = S.rope.a, dx = S.x - a.x, dy = S.y - a.y, d = Math.hypot(dx, dy);
+    if (d > S.rope.len) { S.x = a.x + dx / d * S.rope.len; S.y = a.y + dy / d * S.rope.len; }
+  }
+  if (S.y < PR) { S.y = PR; S.py = S.y + Math.abs(vy) * 0.3; }
+  if (S.y > WH - 30) return die("You fell into the lava.");
+  for (const s of S.spikes) {
+    if (Math.abs(S.x - s.x) < s.w / 2 + PR * 0.7 && S.y > s.top - PR * 0.6) return die("Spiked!");
+  }
+  while (S.anchors[S.anchors.length - 1].x < S.x + 2500) addAnchor();
+  S.anchors = S.anchors.filter(a => a.x > S.x - 1500 || (S.rope && S.rope.a === a));
+  S.spikes = S.spikes.filter(s => s.x > S.x - 1500);
+}
+function die(why) {
+  S.dead = true; S.rope = null;
+  const m = Math.floor(S.x / 10);
+  const isBest = m > best;
+  if (isBest) { best = m; try { localStorage.setItem(STORE, best); } catch {} }
+  document.getElementById("msgTitle").textContent = isBest ? `New best: ${m} m!` : `${m} m`;
+  document.getElementById("msgText").textContent = why + " Tap or press Space to go again.";
+  show(true); updateHud();
+}
+function show(v) { document.getElementById("msg").classList.toggle("hide", !v); }
+function updateHud() {
+  document.getElementById("dist").textContent = Math.floor(Math.max(0, S.x) / 10) + " m";
+  document.getElementById("best").textContent = best ? `Best ${best} m` : "";
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, scale = 1;
+function resize() { DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR; scale = innerHeight / WH; }
+addEventListener("resize", resize);
+function render(now) {
+  const vw = innerWidth / scale;
+  S.cam += ((S.x - vw * 0.32) - S.cam) * 0.12;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const sky = ctx.createLinearGradient(0, 0, 0, innerHeight);
+  sky.addColorStop(0, "#120f22"); sky.addColorStop(0.7, "#2a1638"); sky.addColorStop(1, "#5a1d2a");
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * scale, 0, 0, DPR * scale, -S.cam * DPR * scale, 0);
+  // stars (parallax)
+  ctx.fillStyle = "rgba(255,255,255,.5)";
+  for (let i = 0; i < 80; i++) {
+    const sx = ((i * 397.3) % 1600) + Math.floor((S.cam * 0.8) / 1600) * 1600 + S.cam * 0.2;
+    const x = sx < S.cam - 10 ? sx + 1600 : sx;
+    ctx.fillRect(x, (i * 131.7) % 380, 1.6, 1.6);
+  }
+  // spikes
+  for (const s of S.spikes) {
+    ctx.fillStyle = "#2b2440"; ctx.fillRect(s.x - s.w / 2, s.top + 14, s.w, WH - s.top);
+    ctx.fillStyle = "#c9c2e8"; ctx.beginPath(); ctx.moveTo(s.x - s.w / 2, s.top + 16); ctx.lineTo(s.x, s.top - 8); ctx.lineTo(s.x + s.w / 2, s.top + 16); ctx.fill();
+  }
+  // lava
+  const lavaY = WH - 30;
+  ctx.fillStyle = "#ff5a3c";
+  ctx.beginPath(); ctx.moveTo(S.cam - 10, WH);
+  for (let x = S.cam - 10; x < S.cam + vw + 20; x += 20) ctx.lineTo(x, lavaY + Math.sin(x * 0.03 + now / 300) * 4);
+  ctx.lineTo(S.cam + vw + 20, WH); ctx.fill();
+  ctx.fillStyle = "rgba(255,200,80,.6)"; ctx.fillRect(S.cam - 10, lavaY + 10, vw + 30, 4);
+  // anchors
+  const cand = !S.dead ? candidate() : null;
+  for (const a of S.anchors) {
+    if (a.x < S.cam - 40 || a.x > S.cam + vw + 40) continue;
+    const active = S.rope && S.rope.a === a;
+    ctx.strokeStyle = active ? "#ffcf70" : a === cand ? "#9fe8ff" : "#7d74a8"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.arc(a.x, a.y, 9, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (cand && !S.rope && !S.dead) {
+    ctx.setLineDash([5, 7]); ctx.strokeStyle = "rgba(159,232,255,.45)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(S.x, S.y); ctx.lineTo(cand.x, cand.y); ctx.stroke(); ctx.setLineDash([]);
+  }
+  // rope
+  if (S.rope) { ctx.strokeStyle = "#ffcf70"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(S.rope.a.x, S.rope.a.y); ctx.lineTo(S.x, S.y); ctx.stroke(); }
+  // trail + player
+  S.trail.push([S.x, S.y]); if (S.trail.length > 24) S.trail.shift();
+  for (let i = 0; i < S.trail.length; i++) {
+    ctx.fillStyle = `rgba(255,207,112,${i / S.trail.length * 0.35})`;
+    ctx.beginPath(); ctx.arc(S.trail[i][0], S.trail[i][1], PR * i / S.trail.length, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.fillStyle = S.dead ? "#ff5a3c" : "#fff4d6"; ctx.beginPath(); ctx.arc(S.x, S.y, PR, 0, Math.PI * 2); ctx.fill();
+  if (!S.dead) updateHud();
+}
+
+// ---------- input & loop ----------
+addEventListener("pointerdown", e => { e.preventDefault(); press(); });
+addEventListener("pointerup", release); addEventListener("pointercancel", release);
+addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); press(); } });
+addEventListener("keyup", e => { if (e.code === "Space") release(); });
+let last = performance.now(), acc = 0;
+const H = 1 / 120;
+function frame(now) {
+  acc += Math.min(0.05, (now - last) / 1000); last = now;
+  while (acc >= H) { step(H); acc -= H; }
+  render(now); requestAnimationFrame(frame);
+}
+resize(); reset();
+window.__game = { get S() { return S; }, step, press, release, candidate, reset };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
