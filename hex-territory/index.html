@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hex Territory</title>
+<style>
+  :root { --bg: #16131c; --text: #f2eef8; --muted: #a39cb3; --p1: #3ad1c0; --p2: #ff9a4d; --panel: rgba(30,26,40,.9); --border: #3a3350; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; gap: 10px; pointer-events: none; }
+  #top > * { pointer-events: auto; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #score { display: flex; gap: 14px; font-variant-numeric: tabular-nums; font-size: 20px; font-weight: 700; align-items: center; }
+  .p1 { color: var(--p1); } .p2 { color: var(--p2); }
+  #turn { font-size: 13px; color: var(--muted); text-align: right; }
+  #bar { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; width: max-content; max-width: calc(100vw - 24px); }
+  button { font: inherit; font-size: 14px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; cursor: pointer; min-height: 36px; }
+  button.active { border-color: var(--p1); box-shadow: inset 0 0 0 1px var(--p1); }
+  button:hover { border-color: var(--muted); }
+  #over { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(10,8,14,.45); }
+  #over.show { display: flex; }
+  #over .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px 28px; text-align: center; }
+  #over h2 { margin: 0 0 6px; }
+  #over p { margin: 0 0 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top">
+  <div><h1>Hex Territory</h1><div class="muted">Claim hexes. Surround an enemy group so it has no empty neighbours and it flips to your colour.</div></div>
+  <div><div id="score"><span class="p1" id="s1">0</span><span class="muted">vs</span><span class="p2" id="s2">0</span></div><div id="turn"></div></div>
+</div>
+<div id="bar">
+  <button data-mode="easy">vs AI · Easy</button>
+  <button data-mode="hard">vs AI · Hard</button>
+  <button data-mode="pvp">2 players</button>
+</div>
+<div id="over"><div class="card"><h2 id="overTitle"></h2><p id="overText"></p><button id="again">Play again</button></div></div>
+<script>
+"use strict";
+const RAD = 4;
+// Board cells in axial coordinates (q, r).
+const CELLS = [];
+for (let q = -RAD; q <= RAD; q++) for (let r = -RAD; r <= RAD; r++) if (Math.abs(q + r) <= RAD) CELLS.push([q, r]);
+const N = CELLS.length, INDEX = new Map(CELLS.map(([q, r], i) => [q + "," + r, i]));
+const NB = CELLS.map(([q, r]) => [[1, 0], [-1, 0], [0, 1], [0, -1], [1, -1], [-1, 1]].map(([dq, dr]) => INDEX.get((q + dq) + "," + (r + dr))).filter(i => i !== undefined));
+const EDGE = CELLS.map(([q, r]) => Math.max(Math.abs(q), Math.abs(r), Math.abs(q + r)) === RAD);
+
+// Place a stone for player p at i. Every enemy group left with no empty neighbour is
+// surrounded and flips to p. A move that leaves your own group with no empty neighbour
+// is only allowed if it flips something. Returns the flipped cells, or null if illegal.
+function group(board, start) {
+  const col = board[start], cells = [start], seen = new Set(cells); let libs = 0;
+  for (let k = 0; k < cells.length; k++) for (const n of NB[cells[k]]) {
+    if (seen.has(n)) continue;
+    if (board[n] === col) { seen.add(n); cells.push(n); } else if (!board[n]) { seen.add(n); libs++; }
+  }
+  return { cells, libs };
+}
+function play(board, i, p) {
+  if (board[i]) return null;
+  board[i] = p;
+  const op = 3 - p, flipped = [];
+  for (const n of NB[i]) {
+    if (board[n] !== op) continue;
+    const g = group(board, n);
+    if (!g.libs) for (const c of g.cells) { board[c] = p; flipped.push(c); }
+  }
+  if (!flipped.length && !group(board, i).libs) { board[i] = 0; return null; }
+  return flipped;
+}
+function legalMoves(b, p) { const out = []; for (let i = 0; i < N; i++) if (!b[i]) { const c = b.slice(); if (play(c, i, p)) out.push(i); } return out; }
+const count = (b, p) => { let c = 0; for (let i = 0; i < N; i++) if (b[i] === p) c++; return c; };
+const empties = b => { const e = []; for (let i = 0; i < N; i++) if (!b[i]) e.push(i); return e; };
+
+// ---------- AI: alpha-beta search over the most promising moves ----------
+function evaluate(b, me) {
+  let s = 0; const seen = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    if (!b[i]) {
+      // an empty hex whose neighbours are all one colour is a safe breathing space for that colour
+      let owner = 0, mixed = false;
+      for (const n of NB[i]) { if (!b[n]) { mixed = true; break; } if (!owner) owner = b[n]; else if (owner !== b[n]) { mixed = true; break; } }
+      if (!mixed && owner) s += (owner === me ? 1 : -1) * 6;
+      continue;
+    }
+    if (seen[i]) continue;
+    const g = group(b, i), sign = b[i] === me ? 1 : -1;
+    for (const c of g.cells) seen[c] = 1;
+    s += sign * g.cells.length * 10;
+    if (g.libs === 1) s -= sign * g.cells.length * 9;      // one empty neighbour left: almost certainly lost
+    else if (g.libs === 2) s -= sign * g.cells.length * 2;
+  }
+  return s;
+}
+function orderedMoves(b, p, limit) {
+  const scored = [];
+  for (const i of empties(b)) { const c = b.slice(); const fl = play(c, i, p); if (!fl) continue; let adj = 0; for (const n of NB[i]) if (b[n]) adj++; scored.push([i, fl.length * 20 + adj + Math.random() * 3]); }
+  scored.sort((a, b) => b[1] - a[1]);
+  return scored.slice(0, limit).map(x => x[0]);
+}
+function search(b, p, me, depth, alpha, beta, width) {
+  if (depth === 0) return evaluate(b, me);
+  const list = orderedMoves(b, p, width);
+  if (!list.length) return legalMoves(b, 3 - p).length ? search(b, 3 - p, me, depth - 1, alpha, beta, width) : evaluate(b, me);
+  if (p === me) {
+    let v = -Infinity;
+    for (const i of list) { const c = b.slice(); play(c, i, p); v = Math.max(v, search(c, 3 - p, me, depth - 1, alpha, beta, width)); alpha = Math.max(alpha, v); if (alpha >= beta) break; }
+    return v;
+  }
+  let v = Infinity;
+  for (const i of list) { const c = b.slice(); play(c, i, p); v = Math.min(v, search(c, 3 - p, me, depth - 1, alpha, beta, width)); beta = Math.min(beta, v); if (alpha >= beta) break; }
+  return v;
+}
+function aiMove(b, me, level) {
+  const left = empties(b).length, endgame = left <= 7;
+  // In the endgame the board is nearly full and one move can flip a huge group,
+  // so search to the end. Otherwise look a few moves ahead at the most promising moves.
+  const depth = endgame ? left : level === "hard" ? 4 : 2;
+  const width = endgame ? left : level === "hard" ? 10 : 10;
+  let best = null, bv = -Infinity;
+  for (const i of orderedMoves(b, me, endgame ? left : level === "hard" ? 30 : 16)) {
+    const c = b.slice(); play(c, i, me);
+    const v = search(c, 3 - me, me, depth - 1, -Infinity, Infinity, width) + (level === "easy" && !endgame ? Math.random() * 3 : 0);
+    if (v > bv) { bv = v; best = i; }
+  }
+  return best;
+}
+
+// ---------- game state ----------
+const G = { board: new Uint8Array(N), turn: 1, mode: "easy", last: -1, flips: [], over: false, thinking: false };
+function newGame(mode = G.mode) {
+  Object.assign(G, { board: new Uint8Array(N), turn: 1, mode, last: -1, flips: [], over: false, thinking: false, passed: 0, bad: null });
+  document.querySelectorAll("#bar button").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  document.getElementById("over").classList.remove("show");
+  hud();
+}
+function hud() {
+  document.getElementById("s1").textContent = count(G.board, 1);
+  document.getElementById("s2").textContent = count(G.board, 2);
+  const who = G.mode === "pvp" ? (G.turn === 1 ? "Teal to play" : "Orange to play") : (G.turn === 1 ? "Your turn" : "AI is thinking…");
+  const pass = G.passed ? ` · ${G.passed === 1 ? (G.mode === "pvp" ? "Teal" : "You") : (G.mode === "pvp" ? "Orange" : "AI")} had no move and passed` : "";
+  document.getElementById("turn").textContent = G.over ? "Game over" : who + pass;
+}
+function doMove(i) {
+  if (G.over) return;
+  const flipped = play(G.board, i, G.turn);
+  if (!flipped) { G.bad = { i, t: performance.now() }; return; }
+  const now = performance.now();
+  G.last = i; G.flips = flipped.map(c => ({ c, t: now })).concat([{ c: i, t: now }]);
+  G.turn = 3 - G.turn;
+  advance();
+}
+function advance() {
+  // a player with no legal move passes; if neither can move, the game is over
+  if (!legalMoves(G.board, G.turn).length) {
+    if (!legalMoves(G.board, 3 - G.turn).length) return finish();
+    G.passed = G.turn; G.turn = 3 - G.turn;
+  } else G.passed = 0;
+  hud();
+  if (G.mode !== "pvp" && G.turn === 2) {
+    G.thinking = true; hud();
+    setTimeout(() => { const m = aiMove(G.board, 2, G.mode); G.thinking = false; if (m === null) { G.turn = 1; advance(); } else doMove(m); }, 350);
+  }
+}
+function finish() {
+  G.over = true; hud();
+  const a = count(G.board, 1), b = count(G.board, 2);
+  const title = a === b ? "A draw!" : G.mode === "pvp" ? (a > b ? "Teal wins!" : "Orange wins!") : (a > b ? "You win!" : "The AI wins");
+  document.getElementById("overTitle").textContent = title;
+  document.getElementById("overTitle").className = a > b ? "p1" : a < b ? "p2" : "";
+  document.getElementById("overText").textContent = `${a} to ${b}.`;
+  document.getElementById("over").classList.add("show");
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, geo = { size: 30, cx: 0, cy: 0 }, hover = -1;
+function resize() { DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR; }
+addEventListener("resize", resize);
+function center(i) { const [q, r] = CELLS[i]; return [geo.cx + geo.size * Math.sqrt(3) * (q + r / 2), geo.cy + geo.size * 1.5 * r]; }
+function hexPath(x, y, s) { ctx.beginPath(); for (let k = 0; k < 6; k++) { const a = Math.PI / 6 + k * Math.PI / 3; ctx.lineTo(x + s * Math.cos(a), y + s * Math.sin(a)); } ctx.closePath(); }
+function render(now) {
+  const top = innerWidth < 600 ? 100 : 76, bottom = 70, avail = Math.min(innerWidth - 20, innerHeight - top - bottom);
+  geo = { size: avail / (2 * RAD + 1) / Math.sqrt(3) * 1.02, cx: innerWidth / 2, cy: top + (innerHeight - top - bottom) / 2 };
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#16131c"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  // preview of what a move would flip
+  let preview = new Set();
+  let illegal = -1;
+  if (hover >= 0 && !G.board[hover] && !G.over && (G.mode === "pvp" || G.turn === 1)) { const c = G.board.slice(); const f = play(c, hover, G.turn); if (f) f.forEach(x => preview.add(x)); else illegal = hover; }
+  if (G.bad && now - G.bad.t < 400) illegal = G.bad.i;
+  for (let i = 0; i < N; i++) {
+    const [x, y] = center(i), v = G.board[i];
+    const fl = G.flips.find(f => f.c === i), k = fl ? Math.min(1, (now - fl.t) / 350) : 1, pop = 1 + Math.sin(k * Math.PI) * 0.12;
+    hexPath(x, y, geo.size * 0.94 * pop);
+    ctx.fillStyle = v === 1 ? "#3ad1c0" : v === 2 ? "#ff9a4d" : EDGE[i] ? "#2a2436" : "#221d2d";
+    if (!v && i === hover) ctx.fillStyle = G.turn === 1 ? "rgba(58,209,192,.35)" : "rgba(255,154,77,.35)";
+    if (i === illegal) ctx.fillStyle = "rgba(255,80,90,.35)";
+    ctx.fill();
+    if (preview.has(i)) { ctx.strokeStyle = G.turn === 1 ? "#3ad1c0" : "#ff9a4d"; ctx.lineWidth = 3; ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]); }
+    if (i === G.last) { ctx.fillStyle = "rgba(255,255,255,.85)"; ctx.beginPath(); ctx.arc(x, y, geo.size * 0.16, 0, Math.PI * 2); ctx.fill(); }
+  }
+}
+
+// ---------- input & loop ----------
+function cellAt(e) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < N; i++) { const [x, y] = center(i), d = Math.hypot(x - e.clientX, y - e.clientY); if (d < bd) { bd = d; best = i; } }
+  return bd < geo.size * 0.95 ? best : -1;
+}
+cv.addEventListener("pointermove", e => { hover = e.pointerType === "mouse" ? cellAt(e) : -1; });
+cv.addEventListener("pointerleave", () => { hover = -1; });
+cv.addEventListener("pointerdown", e => {
+  const i = cellAt(e);
+  if (i < 0 || G.thinking || G.over) return;
+  if (G.mode !== "pvp" && G.turn !== 1) return;
+  doMove(i);
+});
+document.querySelectorAll("#bar button").forEach(b => b.onclick = () => newGame(b.dataset.mode));
+document.getElementById("again").onclick = () => newGame();
+function frame(now) { render(now); requestAnimationFrame(frame); }
+resize(); newGame("easy");
+window.__game = { G, play, aiMove, newGame, doMove, empties, legalMoves, count, N, EDGE, NB };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
