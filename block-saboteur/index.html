@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Block Saboteur</title>
+<style>
+  :root { --bg: #11121a; --text: #eceef8; --muted: #8d92ab; --accent: #ff6b8b; --panel: #1b1d2a; --border: #2c2f44; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  #wrap { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; padding: 12px 16px; gap: 10px; }
+  header { width: 100%; display: flex; justify-content: space-between; gap: 10px; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #stats { text-align: right; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); font-size: 20px; }
+  #game { flex: 1; min-height: 0; display: flex; gap: 16px; align-items: center; justify-content: center; width: 100%; }
+  canvas { display: block; height: 100%; max-height: 100%; aspect-ratio: 1 / 2; max-width: 100%; }
+  #side { display: flex; flex-direction: column; gap: 8px; min-width: 150px; }
+  #choices { display: flex; flex-direction: column; gap: 8px; }
+  .choice { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 6px; cursor: pointer; display: flex; align-items: center; justify-content: center; height: 74px; }
+  .choice:hover:not(:disabled) { border-color: var(--accent); }
+  .choice:disabled { opacity: .35; cursor: default; }
+  .choice canvas { height: 56px; width: 84px; aspect-ratio: auto; }
+  .modes { display: flex; gap: 4px; }
+  .modes button, #restart { font: inherit; font-size: 12px; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; cursor: pointer; flex: 1; }
+  .modes button.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  #over { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(8,8,14,.5); }
+  #over.show { display: flex; }
+  #over .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 22px 28px; text-align: center; max-width: calc(100vw - 32px); }
+  #over h2 { margin: 0 0 6px; color: var(--accent); }
+  #over p { margin: 0 0 14px; color: var(--muted); }
+  #over button { font: inherit; font-weight: 700; background: var(--accent); color: #2a0610; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; }
+  @media (max-width: 600px) {
+    #game { flex-direction: column; gap: 8px; }
+    canvas#board { height: auto; width: min(64vw, 46vh); }
+    #side { flex-direction: column; width: 100%; min-width: 0; }
+    #choices { flex-direction: row; }
+    .choice { flex: 1; height: 62px; }
+    .choice canvas { height: 46px; width: 70px; }
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div><h1>Block Saboteur</h1><div class="muted">You choose the pieces. The AI places them. Make it overflow.</div></div>
+    <div id="stats"><b id="pieces">0</b><div class="muted">pieces · AI cleared <span id="lines">0 lines</span></div></div>
+  </header>
+  <div id="game">
+    <canvas id="board" width="300" height="600"></canvas>
+    <div id="side">
+      <div class="muted" id="prompt">Pick the next piece:</div>
+      <div id="choices"></div>
+      <div class="modes"><button data-mode="three" class="on" title="Choose from 3 random pieces">Pick from 3</button><button data-mode="any" title="Choose any piece">Pick any</button></div>
+      <button id="restart">Restart</button>
+      <div class="muted" id="best"></div>
+    </div>
+  </div>
+</div>
+<div id="over"><div class="card"><h2 id="overTitle">The AI overflowed!</h2><p id="overText"></p><button id="again">Play again</button></div></div>
+<script>
+"use strict";
+const W = 10, H = 20;
+const SHAPES = {
+  I: [[0, 0], [1, 0], [2, 0], [3, 0]], O: [[0, 0], [1, 0], [0, 1], [1, 1]], T: [[0, 0], [1, 0], [2, 0], [1, 1]],
+  S: [[1, 0], [2, 0], [0, 1], [1, 1]], Z: [[0, 0], [1, 0], [1, 1], [2, 1]], J: [[0, 0], [0, 1], [1, 1], [2, 1]], L: [[2, 0], [0, 1], [1, 1], [2, 1]],
+};
+const COLORS = { I: "#4fd6ff", O: "#ffd84f", T: "#c77dff", S: "#6ee07a", Z: "#ff6b6b", J: "#5b8cff", L: "#ffa54f" };
+const NAMES = Object.keys(SHAPES);
+function rotations(cells) {
+  const out = [], keys = new Set();
+  let cur = cells;
+  for (let r = 0; r < 4; r++) {
+    const minX = Math.min(...cur.map(c => c[0])), minY = Math.min(...cur.map(c => c[1]));
+    const norm = cur.map(([x, y]) => [x - minX, y - minY]).sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    const k = JSON.stringify(norm); if (!keys.has(k)) { keys.add(k); out.push(norm); }
+    cur = cur.map(([x, y]) => [-y, x]);
+  }
+  return out;
+}
+const ROT = Object.fromEntries(NAMES.map(n => [n, rotations(SHAPES[n])]));
+
+// ---------- the AI: tries every rotation and column, keeps the best-looking result ----------
+function fits(board, cells, x, y) { return cells.every(([cx, cy]) => { const X = x + cx, Y = y + cy; return X >= 0 && X < W && Y < H && (Y < 0 || !board[Y][X]); }); }
+function drop(board, cells, x) {
+  if (!fits(board, cells, x, -4)) return null;
+  let y = -4; while (fits(board, cells, x, y + 1)) y++;
+  return y;
+}
+function place(board, cells, x, y, name) {
+  const b = board.map(r => r.slice());
+  for (const [cx, cy] of cells) { if (y + cy < 0) return null; b[y + cy][x + cx] = name; }
+  const kept = b.filter(r => r.some(c => !c)), lines = H - kept.length;
+  while (kept.length < H) kept.unshift(Array(W).fill(null));
+  return { board: kept, lines };
+}
+function features(b) {
+  const heights = []; let holes = 0;
+  for (let x = 0; x < W; x++) {
+    let y = 0; while (y < H && !b[y][x]) y++;
+    heights.push(H - y);
+    for (let yy = y + 1; yy < H; yy++) if (!b[yy][x]) holes++;
+  }
+  let bump = 0; for (let x = 0; x < W - 1; x++) bump += Math.abs(heights[x] - heights[x + 1]);
+  return { agg: heights.reduce((a, c) => a + c, 0), holes, bump, max: Math.max(...heights) };
+}
+function bestMove(board, name) {
+  let best = null;
+  for (const cells of ROT[name]) {
+    const w = Math.max(...cells.map(c => c[0])) + 1;
+    for (let x = 0; x <= W - w; x++) {
+      const y = drop(board, cells, x); if (y === null) continue;
+      const res = place(board, cells, x, y, name); if (!res) continue;
+      const f = features(res.board);
+      const score = -0.510066 * f.agg + 0.760666 * res.lines - 0.35663 * f.holes - 0.184483 * f.bump;
+      if (!best || score > best.score) best = { cells, x, y, score, res };
+    }
+  }
+  return best;
+}
+
+// ---------- game ----------
+let G, mode = "three", best = null;
+try { best = +localStorage.getItem("blockSaboteur.best3") || null; } catch {}
+const bestKey = () => mode === "three" ? "blockSaboteur.best3" : "blockSaboteur.bestAny";
+function loadBest() { try { best = +localStorage.getItem(bestKey()) || null; } catch { best = null; } }
+function newGame() {
+  G = { board: Array.from({ length: H }, () => Array(W).fill(null)), pieces: 0, lines: 0, anim: null, over: false, flash: null, offer: [] };
+  offer(); hud(); document.getElementById("over").classList.remove("show");
+}
+function offer() {
+  if (mode === "any") G.offer = NAMES.slice();
+  else { const pool = NAMES.slice(); G.offer = []; while (G.offer.length < 3) G.offer.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]); }
+  renderChoices();
+}
+function choose(name) {
+  if (G.anim || G.over) return;
+  const mv = bestMove(G.board, name);
+  G.pieces++;
+  if (!mv) return gameOver(name);
+  G.anim = { name, mv, t0: performance.now() };
+  renderChoices(); hud();
+}
+function land() {
+  const { mv } = G.anim;
+  if (mv.res.lines) G.flash = { t: performance.now(), lines: mv.res.lines };
+  G.board = mv.res.board; G.lines += mv.res.lines; G.anim = null;
+  // if the AI's best option leaves the stack touching the top, it's overflowing
+  if (features(G.board).max >= H - 1 && NAMES.every(n => !bestMove(G.board, n))) return gameOver();
+  offer(); hud();
+}
+function gameOver(name) {
+  G.over = true; renderChoices();
+  const isBest = !best || G.pieces < best;
+  if (isBest) { best = G.pieces; try { localStorage.setItem(bestKey(), best); } catch {} }
+  document.getElementById("overTitle").textContent = isBest ? `New record: ${G.pieces} pieces!` : "The AI overflowed!";
+  document.getElementById("overText").textContent = `${name ? `There was nowhere to put your ${name}. ` : ""}It took ${G.pieces} pieces and the AI cleared ${G.lines} line${G.lines === 1 ? "" : "s"} on the way. Fewer pieces is better.`;
+  document.getElementById("over").classList.add("show"); hud();
+}
+function hud() {
+  document.getElementById("pieces").textContent = G.pieces;
+  document.getElementById("lines").textContent = `${G.lines} line${G.lines === 1 ? "" : "s"}`;
+  document.getElementById("best").textContent = best ? `Record (${mode === "three" ? "pick from 3" : "pick any"}): ${best} pieces` : "";
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("board"), ctx = cv.getContext("2d");
+function sizeCanvas() {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+}
+addEventListener("resize", sizeCanvas);
+function cell(c, x, y, cs, color, alpha = 1) {
+  c.globalAlpha = alpha; c.fillStyle = color; c.fillRect(x * cs + 1, y * cs + 1, cs - 2, cs - 2);
+  c.fillStyle = "rgba(255,255,255,.25)"; c.fillRect(x * cs + 1, y * cs + 1, cs - 2, cs * .18); c.globalAlpha = 1;
+}
+function render(now) {
+  const cs = cv.width / W;
+  ctx.fillStyle = "#0b0c13"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.strokeStyle = "rgba(255,255,255,.04)"; ctx.lineWidth = 1;
+  for (let x = 1; x < W; x++) { ctx.beginPath(); ctx.moveTo(x * cs, 0); ctx.lineTo(x * cs, cv.height); ctx.stroke(); }
+  for (let y = 1; y < H; y++) { ctx.beginPath(); ctx.moveTo(0, y * cs); ctx.lineTo(cv.width, y * cs); ctx.stroke(); }
+  ctx.fillStyle = "rgba(255,107,139,.12)"; ctx.fillRect(0, 0, cv.width, cs * 2);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (G.board[y][x]) cell(ctx, x, y, cs, COLORS[G.board[y][x]]);
+  if (G.anim) {
+    const { name, mv, t0 } = G.anim, k = Math.min(1, (now - t0) / 450);
+    // slide across first, then drop
+    const startX = 3, sx = k < .35 ? startX + (mv.x - startX) * (k / .35) : mv.x, sy = k < .35 ? -2 : -2 + (mv.y + 2) * ((k - .35) / .65) ** 2;
+    for (const [cx, cy] of mv.cells) if (sy + cy >= 0) cell(ctx, sx + cx, sy + cy, cs, COLORS[name]);
+    if (k >= 1) land();
+  }
+  if (G.flash && now - G.flash.t < 300) { ctx.fillStyle = `rgba(255,255,255,${.3 * (1 - (now - G.flash.t) / 300)})`; ctx.fillRect(0, 0, cv.width, cv.height); }
+}
+function renderChoices() {
+  const box = document.getElementById("choices"); box.innerHTML = "";
+  for (const name of G.offer) {
+    const b = document.createElement("button"); b.className = "choice"; b.disabled = !!G.anim || G.over; b.title = `Give the AI a ${name}`;
+    const c = document.createElement("canvas"); c.width = 168; c.height = 112; const x = c.getContext("2d"), cells = SHAPES[name];
+    const w = Math.max(...cells.map(q => q[0])) + 1, h = Math.max(...cells.map(q => q[1])) + 1, cs = 26;
+    x.translate((168 - w * cs) / 2, (112 - h * cs) / 2);
+    for (const [cx, cy] of cells) cell(x, cx, cy, cs, COLORS[name]);
+    b.appendChild(c); b.onclick = () => choose(name); box.appendChild(b);
+  }
+  document.getElementById("prompt").textContent = G.anim ? "The AI is placing it…" : "Pick the next piece:";
+}
+
+document.querySelectorAll(".modes button").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode; document.querySelectorAll(".modes button").forEach(x => x.classList.toggle("on", x === b)); loadBest(); newGame();
+});
+document.getElementById("restart").onclick = newGame;
+document.getElementById("again").onclick = newGame;
+addEventListener("keydown", e => { const i = +e.key - 1; if (G.offer[i]) choose(G.offer[i]); });
+function frame(now) { render(now); requestAnimationFrame(frame); }
+sizeCanvas(); newGame();
+window.__game = { get G() { return G; }, bestMove, choose, newGame, place, features, ROT, NAMES, setMode: m => { mode = m; newGame(); } };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
