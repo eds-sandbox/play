@@ -89,3 +89,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Gravity Doodle** — built; see `gravity-doodle/`.
 - **Grapple Swing** — built; see `grapple-swing/`.
 - **Orbit Golf** — built; see `orbit-golf/`.
+- **Jelly Stack** — built; see `jelly-stack/`.

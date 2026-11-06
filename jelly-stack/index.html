@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jelly Stack</title>
+<style>
+  :root { --text: #3b2a4a; --muted: #8a7798; --accent: #ff6fa5; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #fdf3f8; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #hud { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #score { text-align: right; font-variant-numeric: tabular-nums; }
+  #score b { font-size: 26px; color: var(--accent); }
+  #over { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; pointer-events: none; }
+  #over.show { display: flex; }
+  #over .card { background: #fff; border-radius: 16px; padding: 20px 26px; text-align: center; box-shadow: 0 10px 40px rgba(120,40,90,.15); }
+  #over h2 { margin: 0 0 6px; color: var(--accent); }
+  #over p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <div><h1>Jelly Stack</h1><div class="muted">Tap or press Space to drop. Don't let anything fall off.</div></div>
+  <div id="score"><b id="count">0</b><div class="muted" id="best"></div></div>
+</div>
+<div id="over"><div class="card"><h2 id="overTitle">Toppled!</h2><p id="overText"></p></div></div>
+<script>
+"use strict";
+let FRICTION = 0.9, GRAV = 1300, SUB = 3, DT = 1 / 60 / SUB, STIFF = 0.5, ITER = 4, DROP_H = 120;
+const PLAT_W = 220, GROUND = 0;
+const NX = 5, NY = 3;
+// Boundary point order around a 5x3 grid of points.
+const HULL = [0, 1, 2, 3, 4, 9, 14, 13, 12, 11, 10, 5];
+const COLORS = ["#ff8fb8", "#ffb86b", "#7fd6a8", "#8fb6ff", "#c79bff", "#ffd86b", "#6fdad6"];
+
+let W, best = 0;
+try { best = +localStorage.getItem("jellyStack.best") || 0; } catch {}
+
+function makeBody(cx, cy, w, h, color) {
+  const pts = [], rest = [];
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    const rx = (i / (NX - 1) - 0.5) * w, ry = (j / (NY - 1) - 0.5) * h;
+    rest.push([rx, ry]); pts.push({ x: cx + rx, y: cy + ry, px: cx + rx, py: cy + ry });
+  }
+  return { pts, rest, w, h, color, held: true, frozen: false, still: 0, box: null };
+}
+
+function reset() {
+  W = { bodies: [], dropper: null, dir: 1, speed: 120, count: 0, over: false, cam: -260, top: GROUND, nextAt: 0, t: 0 };
+  // a first block sits on the platform
+  const b = makeBody(0, GROUND - 26, 120, 52, COLORS[0]); b.held = false; W.bodies.push(b);
+  spawn();
+  document.getElementById("over").classList.remove("show");
+  hud();
+}
+function spawn() {
+  const w = 80 + Math.random() * 50, h = 40 + Math.random() * 18;
+  W.dropper = makeBody(0, W.top - DROP_H, w, h, COLORS[(W.count + 1) % COLORS.length]);
+  W.dropX = -150 + Math.random() * 300;
+}
+function drop() {
+  if (W.over) { reset(); return; }
+  if (!W.dropper || W.t < W.nextAt) return;
+  const b = W.dropper; b.held = false;
+  for (const p of b.pts) { p.px = p.x; p.py = p.y; }
+  W.bodies.push(b); W.dropper = null; W.nextAt = W.t + 0.9;
+}
+function hud() {
+  document.getElementById("count").textContent = W.count;
+  document.getElementById("best").textContent = best ? `Best ${best}` : "";
+}
+
+// ---------- physics ----------
+function centroid(pts) { let x = 0, y = 0; for (const p of pts) { x += p.x; y += p.y; } return [x / pts.length, y / pts.length]; }
+function shapeMatch(b, k) {
+  const [cx, cy] = centroid(b.pts);
+  let dot = 0, cross = 0;
+  b.pts.forEach((p, i) => { const qx = b.rest[i][0], qy = b.rest[i][1], dx = p.x - cx, dy = p.y - cy; dot += qx * dx + qy * dy; cross += qx * dy - qy * dx; });
+  const a = Math.atan2(cross, dot), c = Math.cos(a), s = Math.sin(a);
+  b.pts.forEach((p, i) => {
+    const [qx, qy] = b.rest[i];
+    p.x += (cx + c * qx - s * qy - p.x) * k; p.y += (cy + s * qx + c * qy - p.y) * k;
+  });
+}
+function bbox(b) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const i of HULL) { const p = b.pts[i]; if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+  return [x0, y0, x1, y1];
+}
+function inside(b, x, y) {
+  let c = false;
+  for (let k = 0, j = HULL.length - 1; k < HULL.length; j = k++) {
+    const a = b.pts[HULL[k]], d = b.pts[HULL[j]];
+    if ((a.y > y) !== (d.y > y) && x < (d.x - a.x) * (y - a.y) / (d.y - a.y) + a.x) c = !c;
+  }
+  return c;
+}
+function resolve(p, B) {
+  // push point p out of body B through its nearest edge; the edge moves the other way
+  let bestD = Infinity, bi = 0, bt = 0, qx = 0, qy = 0;
+  for (let k = 0; k < HULL.length; k++) {
+    const a = B.pts[HULL[k]], d = B.pts[HULL[(k + 1) % HULL.length]];
+    const ex = d.x - a.x, ey = d.y - a.y, len2 = ex * ex + ey * ey || 1;
+    let t = ((p.x - a.x) * ex + (p.y - a.y) * ey) / len2; t = Math.max(0, Math.min(1, t));
+    const cx = a.x + ex * t, cy = a.y + ey * t, dd = (p.x - cx) ** 2 + (p.y - cy) ** 2;
+    if (dd < bestD) { bestD = dd; bi = k; bt = t; qx = cx; qy = cy; }
+  }
+  const a = B.pts[HULL[bi]], d = B.pts[HULL[(bi + 1) % HULL.length]];
+  const dx = qx - p.x, dy = qy - p.y;
+  const wp = B.frozen ? 1 : 0.5, we = B.frozen ? 0 : 0.5;
+  p.x += dx * wp; p.y += dy * wp;
+  // friction: damp the point's sliding along the surface
+  // friction: in contact, the point mostly moves along with the surface it touches
+  const ex = d.x - a.x, ey = d.y - a.y, el = Math.hypot(ex, ey) || 1, tx = ex / el, ty = ey / el;
+  const vt = (p.x - p.px) * tx + (p.y - p.py) * ty;
+  p.px += tx * vt * FRICTION; p.py += ty * vt * FRICTION;
+  // no bounce: remove the point's velocity into the surface
+  const nl = Math.hypot(dx, dy) || 1, nx = dx / nl, ny = dy / nl;
+  const vn = (p.x - p.px) * nx + (p.y - p.py) * ny;
+  if (vn < 0) { p.px += nx * vn; p.py += ny * vn; }
+  if (we) { a.x -= dx * we * (1 - bt); a.y -= dy * we * (1 - bt); d.x -= dx * we * bt; d.y -= dy * we * bt; }
+}
+function step() {
+  const bodies = W.bodies;
+  for (const b of bodies) {
+    if (b.frozen) continue;
+    for (const p of b.pts) {
+      const vx = (p.x - p.px) * 0.998, vy = (p.y - p.py) * 0.998;
+      p.px = p.x; p.py = p.y; p.x += vx; p.y += vy + GRAV * DT * DT;
+    }
+  }
+  for (let it = 0; it < ITER; it++) {
+    for (const b of bodies) if (!b.frozen) shapeMatch(b, STIFF);
+    for (const b of bodies) {
+      if (b.frozen) continue;
+      for (const p of b.pts) if (p.y > GROUND && p.py <= GROUND + 2 && Math.abs(p.x) < PLAT_W / 2) {
+        p.y = GROUND; p.px = p.x - (p.x - p.px) * 0.1;
+      }
+    }
+    for (const b of bodies) b.box = bbox(b);
+    for (let i = 0; i < bodies.length; i++) {
+      const A = bodies[i]; if (A.frozen) continue;
+      for (let j = 0; j < bodies.length; j++) {
+        if (i === j) continue;
+        const B = bodies[j], [ax0, ay0, ax1, ay1] = A.box, [bx0, by0, bx1, by1] = B.box;
+        if (ax1 < bx0 || bx1 < ax0 || ay1 < by0 || by1 < ay0) continue;
+        for (const k of HULL) { const p = A.pts[k]; if (p.x >= bx0 && p.x <= bx1 && p.y >= by0 && p.y <= by1 && inside(B, p.x, p.y)) resolve(p, B); }
+      }
+    }
+  }
+}
+function update(dt) {
+  if (W.over) return;
+  W.t += dt;
+  if (!W.dropper && W.t >= W.nextAt) spawn();
+  if (W.dropper) {
+    W.dropX += W.dir * W.speed * dt;
+    if (W.dropX > 170) { W.dropX = 170; W.dir = -1; } else if (W.dropX < -170) { W.dropX = -170; W.dir = 1; }
+    const b = W.dropper, cy = W.top - DROP_H;
+    b.pts.forEach((p, i) => { p.x = p.px = W.dropX + b.rest[i][0]; p.y = p.py = cy + b.rest[i][1] + Math.sin(W.t * 3) * 3; });
+  }
+  for (let s = 0; s < SUB; s++) step();
+  // settle tracking, scoring, freezing and losing
+  let top = GROUND, count = 0;
+  for (const b of W.bodies) {
+    let speed = 0, minY = Infinity, maxY = -Infinity;
+    for (const p of b.pts) { speed = Math.max(speed, Math.hypot(p.x - p.px, p.y - p.py)); minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y); }
+    if (maxY > GROUND + 160) return gameOver();
+    b.still = speed < 0.25 ? b.still + dt : 0;
+    if (b.still > 0.4) { count++; top = Math.min(top, minY); }
+  }
+  // freeze blocks far below the top to keep things fast and stable
+  for (const b of W.bodies) if (!b.frozen && b.still > 1.5 && Math.min(...b.pts.map(p => p.y)) > top + 450) { b.frozen = true; for (const p of b.pts) { p.px = p.x; p.py = p.y; } }
+  W.top = Math.min(W.top, top);
+  const n = Math.max(0, count - 1);
+  if (n > W.count) { W.count = n; W.speed = Math.min(300, 120 + W.count * 9); hud(); }
+}
+function gameOver() {
+  W.over = true;
+  const isBest = W.count > best;
+  if (isBest) { best = W.count; try { localStorage.setItem("jellyStack.best", best); } catch {} }
+  document.getElementById("overTitle").textContent = isBest ? `New best: ${W.count}!` : "Toppled!";
+  document.getElementById("overText").textContent = `You stacked ${W.count} block${W.count === 1 ? "" : "s"}. Tap or press Space to try again.`;
+  document.getElementById("over").classList.add("show"); hud();
+}
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, scale = 1;
+function resize() { DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR; scale = Math.min(1.3, innerWidth / 460, innerHeight / 700); }
+addEventListener("resize", resize);
+function drawBody(b) {
+  ctx.beginPath();
+  const pts = HULL.map(i => b.pts[i]);
+  // smooth outline through edge midpoints
+  for (let k = 0; k < pts.length; k++) {
+    const a = pts[k], c = pts[(k + 1) % pts.length], mx = (a.x + c.x) / 2, my = (a.y + c.y) / 2;
+    k ? ctx.quadraticCurveTo(a.x, a.y, mx, my) : ctx.moveTo(mx, my);
+  }
+  const a = pts[0], c = pts[1]; ctx.quadraticCurveTo(a.x, a.y, (a.x + c.x) / 2, (a.y + c.y) / 2);
+  ctx.closePath();
+  ctx.fillStyle = b.color; ctx.globalAlpha = b.held ? 0.85 : 1; ctx.fill(); ctx.globalAlpha = 1;
+  ctx.strokeStyle = "rgba(60,30,70,.25)"; ctx.lineWidth = 2; ctx.stroke();
+  // shine + face
+  const [cx, cy] = centroid(b.pts);
+  ctx.fillStyle = "rgba(255,255,255,.45)"; ctx.beginPath(); ctx.ellipse(cx - b.w * 0.22, cy - b.h * 0.22, b.w * 0.12, b.h * 0.1, -0.4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "rgba(60,30,70,.6)";
+  ctx.beginPath(); ctx.arc(cx - 9, cy + 1, 2.5, 0, Math.PI * 2); ctx.arc(cx + 9, cy + 1, 2.5, 0, Math.PI * 2); ctx.fill();
+}
+function render() {
+  const target = W.top - innerHeight / scale * 0.55;
+  W.cam += (target - W.cam) * 0.05;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const g = ctx.createLinearGradient(0, 0, 0, innerHeight); g.addColorStop(0, "#e9f3ff"); g.addColorStop(1, "#fdf3f8");
+  ctx.fillStyle = g; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * scale, 0, 0, DPR * scale, DPR * innerWidth / 2, -W.cam * DPR * scale);
+  // height marks
+  ctx.fillStyle = "rgba(60,30,70,.25)"; ctx.font = "12px system-ui"; ctx.textAlign = "left";
+  for (let y = GROUND - 100; y > W.cam - 50; y -= 100) { ctx.fillRect(-innerWidth / scale / 2, y, 12, 1); ctx.fillText(`${(GROUND - y) / 100} m`, -innerWidth / scale / 2 + 16, y + 4); }
+  // platform
+  ctx.fillStyle = "#6b5478"; ctx.beginPath(); ctx.roundRect(-PLAT_W / 2, GROUND, PLAT_W, 22, 6); ctx.fill();
+  ctx.fillStyle = "#4e3d58"; ctx.fillRect(-14, GROUND + 22, 28, 2000);
+  for (const b of W.bodies) drawBody(b);
+  if (W.dropper) {
+    ctx.strokeStyle = "rgba(60,30,70,.15)"; ctx.setLineDash([4, 6]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(W.dropX, W.top - DROP_H + 30); ctx.lineTo(W.dropX, W.top - 10); ctx.stroke(); ctx.setLineDash([]);
+    drawBody(W.dropper);
+  }
+}
+
+addEventListener("pointerdown", e => { e.preventDefault(); drop(); });
+addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (!e.repeat) drop(); } });
+let last = performance.now();
+let acc = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000); last = now;
+  while (acc >= 1 / 60) { update(1 / 60); acc -= 1 / 60; }
+  render(); requestAnimationFrame(frame);
+}
+resize(); reset();
+window.__game = { get W() { return W; }, update, drop, reset, set: o => { if ('f' in o) FRICTION = o.f; if ('s' in o) STIFF = o.s; if ('i' in o) ITER = o.i; if ('h' in o) DROP_H = o.h; } };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
