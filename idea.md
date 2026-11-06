@@ -94,3 +94,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Pipe Flow** — built; see `pipe-flow/`.
 - **Echo Dash** — built; see `echo-dash/`.
 - **Lighthouse** — built; see `lighthouse/`.
+- **Typing Defense** — built; see `typing-defense/`.
