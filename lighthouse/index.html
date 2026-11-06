@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lighthouse</title>
+<style>
+  :root { --text: #eef3ff; --muted: #8e9cc0; --accent: #ffe08a; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #050a18; color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; }
+  #top { position: fixed; top: 12px; left: 16px; right: 16px; display: flex; justify-content: space-between; pointer-events: none; gap: 10px; }
+  h1 { margin: 0; font-size: 18px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  #stats { text-align: right; font-variant-numeric: tabular-nums; }
+  #stats b { color: var(--accent); font-size: 22px; }
+  #lives { letter-spacing: 3px; color: #ff7a7a; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+  #msg.hide { display: none; }
+  #msg .card { background: rgba(10,16,36,.9); border: 1px solid #263256; border-radius: 16px; padding: 20px 26px; text-align: center; max-width: calc(100vw - 32px); }
+  #msg h2 { margin: 0 0 6px; color: var(--accent); }
+  #msg p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="top">
+  <div><h1>Lighthouse</h1><div class="muted">Hold to sweep the light. Ships in the light can see the rocks.</div></div>
+  <div id="stats"><b id="score">0</b><div class="muted">ships home · <span id="lives">♥♥♥</span></div></div>
+</div>
+<div id="msg"><div class="card"><h2 id="msgTitle">Lighthouse</h2><p id="msgText">Ships are sailing to the two harbours through rocky water. In the dark they can't see the rocks. Hold the mouse, your finger or Space to sweep the lighthouse beam across them.<br><br>Tap or press Space to start.</p></div></div>
+<script>
+"use strict";
+const WW = 800, WH = 600, LH = { x: 400, y: 575 }, RANGE = 620, HALF = 0.17, SWEEP = 1.5;
+const HARBORS = [{ x: 90, y: 545 }, { x: 710, y: 545 }];
+let best = 0; try { best = +localStorage.getItem("lighthouse.best") || 0; } catch {}
+let G = { state: "intro" };
+
+function makeRocks() {
+  const rocks = [];
+  for (let tries = 0; rocks.length < 9 && tries < 500; tries++) {
+    const r = 16 + Math.random() * 18, x = 60 + Math.random() * (WW - 120), y = 140 + Math.random() * 300;
+    if (rocks.some(q => Math.hypot(q.x - x, q.y - y) < q.r + r + 40)) continue;
+    if (HARBORS.some(h => Math.hypot(h.x - x, h.y - y) < 130) || Math.hypot(LH.x - x, LH.y - y) < 150) continue;
+    rocks.push({ x, y, r, seed: Math.random() * 10 });
+  }
+  return rocks;
+}
+function start() {
+  G = { state: "play", rocks: makeRocks(), ships: [], wrecks: [], angle: -Math.PI / 2, dir: 1, holding: false,
+        score: 0, lives: 3, spawnT: 1, t: 0, splashes: [] };
+  show(false); hud();
+}
+function spawnShip() {
+  const target = Math.floor(Math.random() * 2), x = 40 + Math.random() * (WW - 80);
+  const h = HARBORS[target];
+  G.ships.push({ x, y: -15, a: Math.atan2(h.y + 15, h.x - x), speed: 26 + Math.random() * 16 + Math.min(20, G.t / 20), target, lit: 0, hue: Math.random() * 360 });
+}
+function inBeam(x, y) {
+  const dx = x - LH.x, dy = y - LH.y, d = Math.hypot(dx, dy);
+  if (d > RANGE) return false;
+  let da = Math.atan2(dy, dx) - G.angle; da = Math.atan2(Math.sin(da), Math.cos(da));
+  return Math.abs(da) < HALF;
+}
+function turnTo(s, want, rate, dt) {
+  let d = want - s.a; d = Math.atan2(Math.sin(d), Math.cos(d));
+  s.a += Math.max(-rate * dt, Math.min(rate * dt, d));
+}
+function update(dt) {
+  for (const sp of G.splashes || []) sp.t += dt;
+  if (G.splashes) G.splashes = G.splashes.filter(sp => sp.t < 1.2);
+  if (G.state !== "play") return;
+  G.t += dt;
+  if (G.holding) {
+    G.angle += G.dir * SWEEP * dt;
+    const lo = -Math.PI + 0.12, hi = -0.12;
+    if (G.angle > hi) { G.angle = hi; G.dir = -1; } else if (G.angle < lo) { G.angle = lo; G.dir = 1; }
+  }
+  G.spawnT -= dt;
+  if (G.spawnT <= 0) { spawnShip(); G.spawnT = Math.max(1.5, 5 - G.t / 25) * (0.7 + Math.random() * 0.6); }
+  for (const s of G.ships) {
+    if (inBeam(s.x, s.y)) s.lit = 1.6; else s.lit = Math.max(0, s.lit - dt);
+    const h = HARBORS[s.target];
+    let want = Math.atan2(h.y - s.y, h.x - s.x), rate = 0.9;
+    if (s.lit > 0) {
+      // a lit ship can see the rocks ahead and steers around them
+      const fx = Math.cos(s.a), fy = Math.sin(s.a);
+      for (const r of G.rocks) {
+        const dx = r.x - s.x, dy = r.y - s.y, ahead = dx * fx + dy * fy, side = -dx * fy + dy * fx;
+        if (ahead > 0 && ahead < 140 && Math.abs(side) < r.r + 26) { want = s.a + (side > 0 ? -1.2 : 1.2); rate = 2.2; break; }
+      }
+    }
+    turnTo(s, want, rate, dt);
+    s.x += Math.cos(s.a) * s.speed * dt; s.y += Math.sin(s.a) * s.speed * dt;
+    for (const r of G.rocks) if (Math.hypot(r.x - s.x, r.y - s.y) < r.r + 6) { s.dead = true; G.lives--; G.wrecks.push({ x: s.x, y: s.y, a: s.a, t: 0 }); G.splashes.push({ x: s.x, y: s.y, t: 0, bad: true }); }
+    if (!s.dead && Math.hypot(h.x - s.x, h.y - s.y) < 28) { s.dead = true; G.score++; G.splashes.push({ x: h.x, y: h.y, t: 0 }); }
+    if (s.x < -60 || s.x > WW + 60 || s.y > WH + 60) s.dead = true;
+  }
+  G.ships = G.ships.filter(s => !s.dead);
+  for (const w of G.wrecks) w.t += dt;
+  G.wrecks = G.wrecks.filter(w => w.t < 4);
+  hud();
+  if (G.lives <= 0) {
+    G.state = "over";
+    const isBest = G.score > best; if (isBest) { best = G.score; try { localStorage.setItem("lighthouse.best", best); } catch {} }
+    document.getElementById("msgTitle").textContent = isBest ? `New best: ${G.score} ships!` : "Three ships lost";
+    document.getElementById("msgText").textContent = `You guided ${G.score} ship${G.score === 1 ? "" : "s"} home. Best: ${best}. Tap or press Space to keep watch again.`;
+    show(true);
+  }
+}
+function hud() {
+  document.getElementById("score").textContent = G.score || 0;
+  document.getElementById("lives").textContent = "♥".repeat(Math.max(0, G.lives ?? 3)) + "♡".repeat(3 - Math.max(0, G.lives ?? 3));
+}
+function show(v) { document.getElementById("msg").classList.toggle("hide", !v); }
+
+// ---------- rendering ----------
+const cv = document.getElementById("c"), ctx = cv.getContext("2d");
+let DPR = 1, view = { s: 1, ox: 0, oy: 0 };
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  const top = 64, s = Math.min(innerWidth / WW, (innerHeight - top) / WH);
+  view = { s, ox: (innerWidth - WW * s) / 2, oy: top + (innerHeight - top - WH * s) / 2 };
+}
+addEventListener("resize", resize);
+function render(now) {
+  const t = now / 1000;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#050a18"; ctx.fillRect(0, 0, innerWidth, innerHeight);
+  ctx.setTransform(DPR * view.s, 0, 0, DPR * view.s, DPR * view.ox, DPR * view.oy);
+  ctx.save(); ctx.beginPath(); ctx.rect(0, 0, WW, WH); ctx.clip();
+  const sea = ctx.createLinearGradient(0, 0, 0, WH); sea.addColorStop(0, "#071229"); sea.addColorStop(1, "#0b1d3d");
+  ctx.fillStyle = sea; ctx.fillRect(0, 0, WW, WH);
+  ctx.strokeStyle = "rgba(120,160,230,.07)"; ctx.lineWidth = 1.5;
+  for (let y = 20; y < WH; y += 28) { ctx.beginPath(); for (let x = 0; x <= WW; x += 20) ctx.lineTo(x, y + Math.sin(x * 0.03 + t + y) * 3); ctx.stroke(); }
+  if (G.state === "intro") G.angle = -Math.PI / 2 + Math.sin(t * 0.8) * 1.1;
+  // beam
+  const ang = G.angle ?? -Math.PI / 2;
+  const beam = ctx.createRadialGradient(LH.x, LH.y, 10, LH.x, LH.y, RANGE);
+  beam.addColorStop(0, "rgba(255,236,170,.55)"); beam.addColorStop(1, "rgba(255,236,170,0)");
+  ctx.fillStyle = beam; ctx.beginPath(); ctx.moveTo(LH.x, LH.y); ctx.arc(LH.x, LH.y, RANGE, ang - HALF, ang + HALF); ctx.closePath(); ctx.fill();
+  // rocks (brighter in the beam)
+  for (const r of G.rocks || []) {
+    const lit = inBeam(r.x, r.y);
+    ctx.fillStyle = lit ? "#7a6e66" : "#1a2234";
+    ctx.beginPath();
+    for (let k = 0; k <= 9; k++) { const a = k / 9 * Math.PI * 2, rr = r.r * (0.82 + 0.18 * Math.sin(a * 3 + r.seed)); ctx.lineTo(r.x + Math.cos(a) * rr, r.y + Math.sin(a) * rr); }
+    ctx.fill();
+    ctx.strokeStyle = lit ? "rgba(255,255,255,.5)" : "rgba(150,180,230,.12)"; ctx.lineWidth = 2; ctx.stroke();
+  }
+  // harbours
+  for (const h of HARBORS) {
+    ctx.fillStyle = "#3b2e24"; ctx.fillRect(h.x - 34, h.y + 14, 68, 10);
+    ctx.strokeStyle = "rgba(255,224,138,.5)"; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.arc(h.x, h.y, 28, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = "#ffe08a"; ctx.beginPath(); ctx.arc(h.x - 30, h.y + 10, 3, 0, Math.PI * 2); ctx.arc(h.x + 30, h.y + 10, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const w of G.wrecks || []) { ctx.globalAlpha = 1 - w.t / 4; drawShip(w.x, w.y + w.t * 3, w.a + w.t * 0.4, "#5a4040", false); ctx.globalAlpha = 1; }
+  for (const s of G.ships || []) drawShip(s.x, s.y, s.a, `hsl(${s.hue} 40% 70%)`, s.lit > 0);
+  for (const sp of G.splashes || []) {
+    ctx.strokeStyle = sp.bad ? `rgba(255,120,120,${1 - sp.t / 1.2})` : `rgba(255,224,138,${1 - sp.t / 1.2})`; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sp.x, sp.y, 8 + sp.t * 40, 0, Math.PI * 2); ctx.stroke();
+  }
+  // lighthouse
+  ctx.fillStyle = "#2a2f3d"; ctx.beginPath(); ctx.ellipse(LH.x, LH.y + 22, 60, 16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#e9e4da"; ctx.beginPath(); ctx.moveTo(LH.x - 14, LH.y + 20); ctx.lineTo(LH.x - 9, LH.y - 30); ctx.lineTo(LH.x + 9, LH.y - 30); ctx.lineTo(LH.x + 14, LH.y + 20); ctx.fill();
+  ctx.fillStyle = "#c94a4a"; ctx.fillRect(LH.x - 12, LH.y - 8, 24, 8); ctx.fillRect(LH.x - 10, LH.y - 26, 20, 7);
+  ctx.fillStyle = "#ffe08a"; ctx.beginPath(); ctx.arc(LH.x, LH.y - 34, 8, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+function drawShip(x, y, a, color, lit) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a);
+  if (lit) { ctx.fillStyle = "rgba(255,224,138,.25)"; ctx.beginPath(); ctx.arc(0, 0, 18, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(4, -7); ctx.lineTo(-11, -6); ctx.lineTo(-11, 6); ctx.lineTo(4, 7); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = lit ? "#ffe08a" : "#2b3550"; ctx.beginPath(); ctx.arc(0, 0, 3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// ---------- input & loop ----------
+function down() { if (G.state !== "play") { start(); return; } G.holding = true; }
+function up() { if (G.state === "play") G.holding = false; }
+addEventListener("pointerdown", e => { e.preventDefault(); down(); });
+addEventListener("pointerup", up); addEventListener("pointercancel", up);
+addEventListener("keydown", e => { if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); if (!e.repeat) down(); } });
+addEventListener("keyup", e => { if (e.code === "Space" || e.code === "Enter") up(); });
+let last = performance.now(), acc = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000); last = now;
+  while (acc >= 1 / 60) { update(1 / 60); acc -= 1 / 60; }
+  render(now); requestAnimationFrame(frame);
+}
+resize(); hud();
+window.__game = { get G() { return G; }, update, start, down, up, inBeam };
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
