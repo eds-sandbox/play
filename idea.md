@@ -84,3 +84,4 @@ and slide along whatever you drew. The goal is to guide them into a target cup.
 - **Echo Dash** (action) and **Light Bender** (puzzle) — both get to a playable state
   fast and have a clear hook.
 - **Shadow Match** — chosen to build first; see `shadow-match/`.
+- **Tiny Ant Colony** — built second; see `tiny-ant-colony/`.
